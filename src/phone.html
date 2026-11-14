@@ -310,12 +310,14 @@ function workPage(k) {
       return '<div class="ch ' + (p.done ? 'read' : '') + '" onclick="openReader(\'' + enc(wid(w)) + '\',\'' + enc(c.id) + '\')"><span class="dot"></span>' +
         '<div class="n"><div>' + esc(c.label) + '</div><div>' + c.pages + ' หน้า' + (p.done ? ' · อ่านแล้ว' : '') + '</div></div>' + state + '</div>';
     }).join('') + '</div></div>' + tabs('lib');
-  $('#go').onclick = () => rp && openReader(wid(w), rp.c.id);
+  $('#go').onclick = () => rp && openReader(enc(wid(w)), enc(rp.c.id));
 }
 
 // ---------- reader
 let R = null; // { w, ci, page }
-function openReader(k, cid) { route('#/r/' + enc(decodeURIComponent(k)) + '/' + enc(decodeURIComponent(cid))); }
+// takes ids already encoded with enc() (as written into onclick attributes): never decode here, or ids
+// that themselves contain %-escapes (e.g. Doujin LC's Thai slugs) stop matching the library
+function openReader(encK, encC) { route('#/r/' + encK + '/' + encC); }
 
 function reader(k, cid) {
   const w = byKey(k); if (!w) return home();
