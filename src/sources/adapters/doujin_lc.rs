@@ -170,10 +170,15 @@ impl ChapterProvider for DoujinLc {
             .ok_or_else(|| SourceError::InvalidResponse("no reader found".into()))?
             .1;
         let body = body.split_once(r#"id="text-chapter-toolbar""#).map_or(body, |p| p.0);
-        let urls: Vec<String> = re(r"<img[^>]*>")
+        let mut urls: Vec<String> = re(r"<img[^>]*>")
             .find_iter(body)
             .filter_map(|m| img_url(m.as_str()))
             .collect();
+        // pages live on image CDNs; images on the site itself are promo banners around them
+        let on_site = |u: &String| u.starts_with(BASE);
+        if urls.iter().any(|u| !on_site(u)) {
+            urls.retain(|u| !on_site(u));
+        }
         if urls.is_empty() {
             return Err(SourceError::InvalidResponse("no pages found".into()));
         }

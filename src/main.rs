@@ -50,7 +50,7 @@ fn run(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     // protected, so the details page links to the site.
     let gated_http = Arc::new(
         network::client::HttpClient::new(
-            &["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "kairew.com"],
+            &["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "manga-gg.com", "images-delivery.com", "kairew.com"],
             &[
                 ("miku-doujin.com", Duration::from_millis(400)),
                 ("doujin-lc.net", Duration::from_millis(400)),

@@ -42,7 +42,7 @@ async fn walk(s: Source, search_word: &str) {
 fn http() -> Arc<HttpClient> {
     let browser = Arc::new(BrowserProcess::beside_current_exe().expect("KUMA_BROWSER_EXE"));
     Arc::new(
-        HttpClient::new(&["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "kairew.com"], &[])
+        HttpClient::new(&["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "manga-gg.com", "images-delivery.com", "kairew.com"], &[])
             .unwrap()
             .with_browser(Some(browser)),
     )
@@ -80,4 +80,27 @@ async fn kairew() {
     println!("  first: {} cover bytes: {}", f.titles.display(), k.cover(f.cover_url.as_ref().unwrap()).await.unwrap().len());
     let m = k.details(&f.key.id).await.unwrap();
     println!("  details: {} desc_len={}", m.titles.display(), m.description.as_deref().map_or(0, str::len));
+}
+
+/// Doujin LC spreads pages over several image CDNs; each one seen must pass the host allow-list,
+/// so a new CDN shows up here instead of as a broken page in the reader.
+#[tokio::test]
+#[ignore]
+async fn doujin_lc_cdns() {
+    let s = DoujinLc::source(http()).unwrap();
+    let (cat, ch, img) = (s.catalog.unwrap(), s.chapters.unwrap(), s.images.unwrap());
+    let mut seen = std::collections::BTreeSet::new();
+    for sort in [SortOrder::Popular, SortOrder::Latest] {
+        let list = cat.search(&SearchQuery { page: 1, sort, ..Default::default() }).await.unwrap();
+        for m in list.items.iter().take(6) {
+            let Ok(chs) = ch.chapters(&m.key.id, &[]).await else { continue };
+            let Some(c) = chs.first() else { continue };
+            let Ok(pages) = ch.pages(&c.id).await else { continue };
+            let host = pages[0].token.split('/').nth(2).unwrap_or("?").to_string();
+            if seen.insert(host.clone()) {
+                let n = img.page_image(&pages[0]).await.unwrap_or_else(|e| panic!("{host}: {e}")).len();
+                println!("{host}: page0 {n} bytes");
+            }
+        }
+    }
 }
