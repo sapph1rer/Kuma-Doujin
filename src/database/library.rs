@@ -309,6 +309,14 @@ impl Database {
         .collect()
     }
 
+    pub fn remove_viewed(&self, key: &MangaKey) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM recently_viewed WHERE source_id = ?1 AND manga_id = ?2",
+            params![key.source, key.id],
+        )?;
+        Ok(())
+    }
+
     pub fn clear_recently_viewed(&self) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM recently_viewed", [])?;
         Ok(())

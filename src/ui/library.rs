@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, RichText, Sense, vec2};
 
-use super::browse::{Covers, card, cover};
+use super::browse::{CardAct, CardCmd, Covers, card, card_menu, cover};
 use super::views::{empty_state, heading};
 use super::{icons, theme};
 use crate::core::models::MangaKey;
@@ -17,6 +17,19 @@ pub struct LibraryAction {
     pub clear_history: bool,
     pub delete_bookmark: Option<i64>,
     pub clear_viewed: bool,
+    pub remove_viewed: Option<MangaKey>,
+    pub remove_favorite: Option<MangaKey>,
+    /// Other card menu choices (open, download all, favorite).
+    pub card: Option<CardAct>,
+}
+
+/// Routes a card menu choice: Remove goes to the list's own field, the rest to `card`.
+fn route(action: &mut LibraryAction, a: Option<CardAct>, remove: impl FnOnce(&mut LibraryAction, MangaKey)) {
+    match a {
+        Some(a) if a.cmd == CardCmd::Remove => remove(action, a.key),
+        Some(a) => action.card = Some(a),
+        None => {}
+    }
 }
 
 /// Home row of recently opened titles (`added_at` = view time, unix ms).
@@ -42,9 +55,12 @@ pub fn viewed_row(
             ui.spacing_mut().item_spacing.x = 16.0;
             for f in viewed.iter().take(16) {
                 let sub = ago(now_ms, f.added_at);
-                if card(ui, covers, &f.key.source, f.cover_url.as_deref(), &f.title, &sub) {
+                let resp = card(ui, covers, &f.key.source, f.cover_url.as_deref(), &f.title, &sub);
+                if resp.clicked() {
                     action.open = Some(f.key.clone());
                 }
+                let m = card_menu(&resp, &f.key, &f.title, f.cover_url.as_deref(), true, Some("Remove from recently viewed"));
+                route(action, m, |a, k| a.remove_viewed = Some(k));
             }
         });
     });
@@ -96,16 +112,19 @@ pub fn continue_row(
                         p.chapter_label,
                         page_text(p.at.page, p.page_count)
                     );
-                    if card(
+                    let resp = card(
                         ui,
                         covers,
                         &p.at.key.source,
                         p.cover_url.as_deref(),
                         &p.title,
                         &sub,
-                    ) {
+                    );
+                    if resp.clicked() {
                         action.resume = Some(p.at.clone());
                     }
+                    let m = card_menu(&resp, &p.at.key, &p.title, p.cover_url.as_deref(), true, Some("Remove from Continue reading"));
+                    route(action, m, |a, k| a.remove_progress = Some(k));
                 }
             });
         });
@@ -240,16 +259,19 @@ pub fn bookmarks(
                     for f in shown {
                         let shelf_name = SHELVES.iter().find(|s| s.0 == f.shelf).map_or("", |s| s.1);
                         let sub = format!("{shelf_name} · added {}", ago(now_ms, f.added_at * 1000));
-                        if card(
+                        let resp = card(
                             ui,
                             covers,
                             &f.key.source,
                             f.cover_url.as_deref(),
                             &f.title,
                             &sub,
-                        ) {
+                        );
+                        if resp.clicked() {
                             action.open = Some(f.key.clone());
                         }
+                        let m = card_menu(&resp, &f.key, &f.title, f.cover_url.as_deref(), true, Some("Remove from favorites"));
+                        route(&mut action, m, |a, k| a.remove_favorite = Some(k));
                     }
                 });
             });
@@ -314,6 +336,7 @@ mod tests {
 pub struct DownloadsAction {
     pub open: Option<usize>,
     pub delete: Option<usize>,
+    pub favorite: Option<(usize, &'static str)>,
 }
 
 /// Offline library: each downloaded work with its cover (`cover_urls[i]`), chapters and size.
@@ -362,8 +385,15 @@ pub fn downloads(
                     let mb = e.size as f64 / (1024.0 * 1024.0);
                     let sub = format!("{} ch · {mb:.0} MB", e.chapters.len());
                     let title = e.manga.titles.display();
-                    if card(ui, covers, &e.manga.key.source, cover_urls[i].as_deref(), title, &sub) {
+                    let resp = card(ui, covers, &e.manga.key.source, cover_urls[i].as_deref(), title, &sub);
+                    if resp.clicked() {
                         out.open = Some(i);
+                    }
+                    match card_menu(&resp, &e.manga.key, title, None, false, Some("Delete download")).map(|a| a.cmd) {
+                        Some(CardCmd::Open) => out.open = Some(i),
+                        Some(CardCmd::Remove) => out.delete = Some(i),
+                        Some(CardCmd::Favorite(shelf)) => out.favorite = Some((i, shelf)),
+                        _ => {}
                     }
                     if ui
                         .small_button(theme::label(icons::TRASH, "Delete"))

@@ -17,7 +17,7 @@ use crate::reader::engine::{self, ReaderSettings};
 use crate::reader::image_decoder;
 use crate::sources::health::HealthBook;
 use crate::sources::registry::SourceRegistry;
-use crate::ui::browse::{self, Actions, Alt, BrowseState, Covers, DetailsState, DlInfo, TagsSlot};
+use crate::ui::browse::{self, Actions, Alt, BrowseState, CardAct, CardCmd, Covers, DetailsState, DlInfo, TagsSlot};
 use crate::ui::library::{self, LibraryAction};
 use crate::ui::reader::{self, PageSlot, ReaderState};
 use crate::ui::{View, icons, theme, views};
@@ -178,6 +178,8 @@ pub struct KumaApp {
     search_history: Vec<String>,
     /// Bookmarks page shelf filter ("" = all).
     fav_shelf: String,
+    /// "Download all chapters" chosen on a card: runs once its details and chapters load.
+    pending_download_all: Option<MangaKey>,
 }
 
 fn cache_read<T: DeserializeOwned>(db: &Mutex<Database>, key: &str, ttl: Duration) -> Option<T> {
@@ -273,6 +275,7 @@ impl KumaApp {
             },
             search_history,
             fav_shelf: String::new(),
+            pending_download_all: None,
         })
         .map(|mut app| {
             if check_updates && !update::dev_build() {
@@ -551,6 +554,7 @@ impl KumaApp {
                         d.result = Some(result.map(|m| *m));
                     }
                     self.try_resume();
+                    self.try_pending_download();
                 }
             }
             Msg::Alternatives { key, list } => {
@@ -574,6 +578,7 @@ impl KumaApp {
                 {
                     d.chapters = Some(result);
                     self.try_resume();
+                    self.try_pending_download();
                 }
             }
             Msg::Cover { url, result } => self.covers.finish(ctx, url, result),
@@ -829,6 +834,42 @@ impl KumaApp {
         }
         self.pending_resume = Some(at);
         self.try_resume();
+    }
+
+    fn try_pending_download(&mut self) {
+        let Some(d) = &self.details else { return };
+        if self.pending_download_all.as_ref() != Some(&d.key) {
+            return;
+        }
+        if let (Some(Ok(_)), Some(Ok(list))) = (&d.result, &d.chapters) {
+            let all = (0..list.len()).collect();
+            self.pending_download_all = None;
+            self.download(all);
+        } else if matches!(d.result, Some(Err(_))) || matches!(d.chapters, Some(Err(_))) {
+            self.pending_download_all = None;
+        }
+    }
+
+    /// A title card's right-click choice (Remove is handled by each list).
+    fn card_action(&mut self, a: CardAct) {
+        match a.cmd {
+            CardCmd::Open => self.open_details(a.key, None),
+            CardCmd::DownloadAll => {
+                self.pending_download_all = Some(a.key.clone());
+                self.open_details(a.key, None);
+            }
+            CardCmd::Favorite(shelf) => {
+                let f = Favorite {
+                    key: a.key,
+                    title: a.title,
+                    cover_url: a.cover,
+                    added_at: 0,
+                    shelf: shelf.to_string(),
+                };
+                self.db_job(true, move |db| db.set_favorite(&f, true));
+            }
+            CardCmd::Remove => {}
+        }
     }
 
     fn try_resume(&mut self) {
@@ -1362,6 +1403,16 @@ impl KumaApp {
         if a.clear_viewed {
             self.db_job(true, |db| db.clear_recently_viewed());
         }
+        if let Some(key) = a.remove_viewed {
+            self.db_job(true, move |db| db.remove_viewed(&key));
+        }
+        if let Some(key) = a.remove_favorite {
+            let f = Favorite { key, title: String::new(), cover_url: None, added_at: 0, shelf: String::new() };
+            self.db_job(true, move |db| db.set_favorite(&f, false));
+        }
+        if let Some(c) = a.card {
+            self.card_action(c);
+        }
     }
 
     fn set_category(&mut self, c: Category) {
@@ -1376,6 +1427,71 @@ impl KumaApp {
             b.needs_load = true;
             b.query.page = 1;
         });
+    }
+
+    /// App-wide keys (the reader has its own). Plain keys are ignored while typing in a text box.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        let typing = ctx.egui_wants_keyboard_input();
+        let cmd = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
+        let plain = |k: Key| !typing && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
+        // Ctrl+F or /: search
+        if cmd(Key::F) || plain(Key::Slash) {
+            self.view = View::Search;
+            self.details = None;
+            if let Some(st) = self.browse.get_mut(&View::Search) {
+                st.focus_search = true;
+            }
+        }
+        // Ctrl+1 … Ctrl+0: pages in sidebar order
+        let digits = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9, Key::Num0];
+        for (i, k) in digits.into_iter().enumerate() {
+            if let Some(v) = View::NAV.get(i).copied()
+                && cmd(k)
+            {
+                self.view = v;
+                self.details = None;
+                self.pending_resume = None;
+            }
+        }
+        // F5 / Ctrl+R: reload the visible listing
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) || cmd(Key::R) {
+            for v in [self.view, View::Popular, View::Latest] {
+                if let Some(st) = self.browse.get_mut(&v)
+                    && (v == self.view || self.view == View::Home)
+                {
+                    st.needs_load = true;
+                }
+            }
+        }
+        if self.details.is_some() {
+            // Esc, Backspace, Alt+Left: back
+            let alt_left = ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::ArrowLeft));
+            if plain(Key::Escape) || plain(Key::Backspace) || alt_left {
+                self.details = None;
+                self.pending_resume = None;
+                return;
+            }
+            // Enter: continue (or start) reading; Ctrl+D: download every chapter
+            // only when no button has the Tab focus (Enter presses that button instead)
+            if ctx.memory(|m| m.focused().is_none()) && plain(Key::Enter) {
+                let resume = self
+                    .details
+                    .as_ref()
+                    .and_then(|d| self.library.recent.iter().find(|p| p.at.key == d.key))
+                    .map(|p| p.at.clone());
+                match resume {
+                    Some(at) => self.resume(at),
+                    None => self.open_reader(0, 0),
+                }
+            }
+            if cmd(Key::D)
+                && let Some(Some(Ok(list))) = self.details.as_ref().map(|d| &d.chapters)
+            {
+                let all = (0..list.len()).collect();
+                self.download(all);
+            }
+        }
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -1598,6 +1714,14 @@ impl KumaApp {
                 if let Some(key) = a.delete.and_then(|i| self.downloaded.get(i)).map(|e| e.manga.key.clone()) {
                     self.delete_download(key);
                 }
+                if let Some((e, shelf)) = a.favorite.and_then(|(i, s)| Some((self.downloaded.get(i)?, s))) {
+                    self.card_action(CardAct {
+                        key: e.manga.key.clone(),
+                        title: e.manga.titles.display().to_string(),
+                        cover: e.manga.cover_url.clone(),
+                        cmd: CardCmd::Favorite(shelf),
+                    });
+                }
                 Actions::default()
             }
             View::Sources => {
@@ -1682,6 +1806,13 @@ impl KumaApp {
         if let Some((i, to_end)) = action.open_chapter {
             self.open_chapter(i, if to_end { usize::MAX } else { 0 });
         }
+        if action.download_chapter
+            && let Some(r) = &self.reader
+            && self.details.as_ref().is_some_and(|d| d.key == r.manga)
+        {
+            let i = r.chapter;
+            self.download(vec![i]);
+        }
         if action.close {
             if let Some(mut r) = self.reader.take() {
                 r.clear_pages();
@@ -1716,6 +1847,7 @@ impl eframe::App for KumaApp {
             return;
         }
 
+        self.shortcuts(&ui.ctx().clone());
         egui::Panel::left("nav")
             .resizable(false)
             .exact_size(190.0)
@@ -1764,6 +1896,9 @@ impl eframe::App for KumaApp {
         }
         if let Some(key) = actions.open {
             self.open_details(key, None);
+        }
+        if let Some(c) = actions.card {
+            self.card_action(c);
         }
         if actions.clear_search_history {
             self.search_history.clear();

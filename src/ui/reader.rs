@@ -60,6 +60,8 @@ pub struct ReaderAction {
     pub settings_changed: bool,
     /// Bookmark the current page.
     pub bookmark: bool,
+    /// Save the open chapter for offline reading.
+    pub download_chapter: bool,
 }
 
 impl ReaderState {
@@ -195,12 +197,17 @@ pub fn show(
             );
         }
         Some(Ok(_)) => {
+            let before = s.clone();
             let a = match s.layout {
                 Layout::Vertical => vertical(ui, st, s),
                 _ => paged(ui, st, s),
             };
             action.open_chapter = action.open_chapter.or(a.open_chapter);
             action.retry_page = a.retry_page;
+            action.bookmark |= a.bookmark;
+            action.download_chapter |= a.download_chapter;
+            action.close |= a.close;
+            action.settings_changed |= *s != before;
         }
     }
 
@@ -303,7 +310,7 @@ fn scale(size: Vec2, avail: Vec2, fit: Fit, zoom: f32) -> f32 {
     base * zoom
 }
 
-fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderAction {
+fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings) -> ReaderAction {
     let total = st.page_count();
     let avail = ui.available_size();
     let mut idx: Vec<usize> = (st.current..(st.current + s.layout.visible()).min(total)).collect();
@@ -359,6 +366,7 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
                     }
                 }
             }
+            resp.context_menu(|ui| page_menu(ui, st, s, &mut action));
             // Double-click zooms in on that spot (or back out).
             if resp.double_clicked()
                 && let Some(p) = resp.interact_pointer_pos()
@@ -392,7 +400,7 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
     action
 }
 
-fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderAction {
+fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings) -> ReaderAction {
     let total = st.page_count();
     let gap = s.page_gap.max(0.0);
     let avail = ui.available_size();
@@ -467,6 +475,7 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
         ui.set_height(full_height);
         ui.set_width(content_w);
         let bg = ui.interact(viewport.translate(ui.min_rect().min.to_vec2()), egui::Id::unique(("vertical-zoom", st.generation)), Sense::click());
+        bg.context_menu(|ui| page_menu(ui, st, s, &mut action));
         if bg.double_clicked()
             && let Some(p) = bg.interact_pointer_pos()
         {
@@ -804,4 +813,50 @@ pub fn reader_sliders(ui: &mut egui::Ui, s: &mut ReaderSettings) {
         egui::Slider::new(&mut s.night_brightness, 0.3..=1.0).text("Night brightness"),
     );
     ui.add_enabled(s.night, egui::Slider::new(&mut s.night_warmth, 0.0..=1.0).text("Night warmth"));
+}
+
+/// Right-click menu on the pages.
+fn page_menu(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings, action: &mut ReaderAction) {
+    if ui.button(theme::label(icons::BOOKMARK_SIMPLE, "Bookmark this page")).clicked() {
+        action.bookmark = true;
+        ui.close();
+    }
+    if ui.button(theme::label(icons::DOWNLOAD_SIMPLE, "Download this chapter (offline)")).clicked() {
+        action.download_chapter = true;
+        ui.close();
+    }
+    let token = st
+        .pages
+        .as_ref()
+        .and_then(|p| p.as_ref().ok())
+        .and_then(|p| p.get(st.current))
+        .map(|p| p.token.lines().last().unwrap_or("").trim_start_matches("file:").to_string());
+    if let Some(t) = token.filter(|t| !t.is_empty())
+        && ui.button(theme::label(icons::COPY, "Copy page link")).clicked()
+    {
+        ui.ctx().copy_text(t);
+        ui.close();
+    }
+    if ui.button(theme::label(icons::COPY, "Copy title")).clicked() {
+        ui.ctx().copy_text(st.title.clone());
+        ui.close();
+    }
+    ui.separator();
+    if ui.checkbox(&mut s.night, "Night mode (N)").clicked() {
+        ui.close();
+    }
+    if ui.button(if st.fullscreen { "Exit fullscreen (F)" } else { "Fullscreen (F)" }).clicked() {
+        st.fullscreen = !st.fullscreen;
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(st.fullscreen));
+        ui.close();
+    }
+    if ui.button(if st.zoom > 1.01 { "Reset zoom (0)" } else { "Zoom in (+)" }).clicked() {
+        st.zoom = if st.zoom > 1.01 { 1.0 } else { 2.0 };
+        ui.close();
+    }
+    ui.separator();
+    if ui.button(theme::label(icons::CARET_LEFT, "Close reader (Esc)")).clicked() {
+        action.close = true;
+        ui.close();
+    }
 }

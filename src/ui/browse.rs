@@ -42,6 +42,8 @@ pub struct BrowseState {
     /// Incremented per request; stale responses are dropped.
     pub generation: u64,
     pub pending: Option<AbortHandle>,
+    /// Put the keyboard focus in the search box (Ctrl+F, /).
+    pub focus_search: bool,
 }
 
 impl BrowseState {
@@ -58,6 +60,7 @@ impl BrowseState {
             needs_load: true,
             generation: 0,
             pending: None,
+            focus_search: false,
         }
     }
 }
@@ -73,6 +76,8 @@ pub struct Actions {
     pub open: Option<MangaKey>,
     pub load_tags: Option<String>,
     pub clear_search_history: bool,
+    /// A card's right-click menu choice.
+    pub card: Option<CardAct>,
     /// User toggled the 18+ filter (the app confirms age before enabling).
     pub set_adult: Option<bool>,
 }
@@ -149,7 +154,7 @@ pub(crate) fn card(
     cover_url: Option<&str>,
     title: &str,
     subtitle: &str,
-) -> bool {
+) -> egui::Response {
     ui.vertical(|ui| {
         ui.set_width(CARD.x);
         let (slot, resp) = ui.allocate_exact_size(CARD, Sense::click());
@@ -175,9 +180,79 @@ pub(crate) fn card(
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         ui.add(Label::new(RichText::new(title).strong()).truncate());
         ui.add(Label::new(RichText::new(subtitle).small().color(theme::MUTED)).truncate());
-        resp.on_hover_text(title).clicked()
+        resp.on_hover_text(title)
     })
     .inner
+}
+
+/// What a title card's right-click menu asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CardCmd {
+    Open,
+    DownloadAll,
+    Favorite(&'static str),
+    /// The list-specific removal (continue reading, recently viewed, favorites, downloads).
+    Remove,
+}
+
+pub struct CardAct {
+    pub key: MangaKey,
+    pub title: String,
+    pub cover: Option<String>,
+    pub cmd: CardCmd,
+}
+
+/// Right-click menu of a title card. `remove` labels the list's own Remove entry (none if `None`);
+/// `download` offers "Download all chapters".
+pub(crate) fn card_menu(
+    resp: &egui::Response,
+    key: &MangaKey,
+    title: &str,
+    cover: Option<&str>,
+    download: bool,
+    remove: Option<&str>,
+) -> Option<CardAct> {
+    let mut cmd = None;
+    resp.context_menu(|ui| {
+        if ui.button(theme::label(icons::BOOK_OPEN, "Open")).clicked() {
+            cmd = Some(CardCmd::Open);
+            ui.close();
+        }
+        if download
+            && ui
+                .button(theme::label(icons::DOWNLOAD_SIMPLE, "Download all chapters (offline)"))
+                .clicked()
+        {
+            cmd = Some(CardCmd::DownloadAll);
+            ui.close();
+        }
+        ui.menu_button(theme::label(icons::HEART, "Add to favorites"), |ui| {
+            for (id, name) in SHELVES {
+                if ui.button(name).clicked() {
+                    cmd = Some(CardCmd::Favorite(id));
+                    ui.close();
+                }
+            }
+        });
+        ui.separator();
+        if ui.button(theme::label(icons::COPY, "Copy title")).clicked() {
+            ui.ctx().copy_text(title.to_string());
+            ui.close();
+        }
+        if let Some(label) = remove {
+            ui.separator();
+            if ui.button(theme::label(icons::TRASH, label)).clicked() {
+                cmd = Some(CardCmd::Remove);
+                ui.close();
+            }
+        }
+    });
+    cmd.map(|cmd| CardAct {
+        key: key.clone(),
+        title: title.to_string(),
+        cover: cover.map(str::to_string),
+        cmd,
+    })
 }
 
 /// Paints a cover (or a placeholder while it loads) into `rect`.
@@ -221,19 +296,25 @@ fn cover_card(
     covers: &mut Covers,
     m: &MangaSummary,
     sources: &SourceRegistry,
+    actions: &mut Actions,
 ) -> bool {
     let source = sources
         .get(&m.key.source)
         .map_or(m.key.source.as_str(), |s| &s.info.name);
     let lang = m.language.as_deref().unwrap_or("?");
-    card(
+    let can_read = sources.get(&m.key.source).is_some_and(|s| s.can_read());
+    let resp = card(
         ui,
         covers,
         &m.key.source,
         m.cover_url.as_deref(),
         m.titles.display(),
         &format!("{source} · {lang}"),
-    )
+    );
+    if let Some(a) = card_menu(&resp, &m.key, m.titles.display(), m.cover_url.as_deref(), can_read, None) {
+        actions.card = Some(a);
+    }
+    resp.clicked()
 }
 
 fn grid(
@@ -250,7 +331,7 @@ fn grid(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
             for m in row {
-                if cover_card(ui, covers, m, reg) {
+                if cover_card(ui, covers, m, reg, actions) {
                     actions.open = Some(m.key.clone());
                 }
             }
@@ -285,6 +366,10 @@ pub fn browse(
                 .hint_text("Search title…")
                 .desired_width(280.0),
         );
+        if std::mem::take(&mut st.focus_search) {
+            edit.request_focus();
+        }
+        reload |= text_menu(&edit, &mut st.query.text);
         let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         reload |= enter
             || ui
@@ -467,7 +552,7 @@ pub fn row(
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 16.0;
                         for m in res.items.iter().take(12) {
-                            if cover_card(ui, covers, m, reg) {
+                            if cover_card(ui, covers, m, reg, actions) {
                                 actions.open = Some(m.key.clone());
                             }
                         }
@@ -876,6 +961,24 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                         action.read = Some(i);
                     }
                     resp.context_menu(|ui| {
+                        if ui.button(theme::label(icons::BOOK_OPEN, "Read")).clicked() {
+                            action.read = Some(i);
+                            ui.close();
+                        }
+                        let saved = dl.saved.is_some_and(|e| e.has(&c.id));
+                        if !saved
+                            && ui
+                                .button(theme::label(icons::DOWNLOAD_SIMPLE, "Download for offline"))
+                                .clicked()
+                        {
+                            action.download = vec![i];
+                            ui.close();
+                        }
+                        if ui.button(theme::label(icons::COPY, "Copy chapter name")).clicked() {
+                            ui.ctx().copy_text(c.label());
+                            ui.close();
+                        }
+                        ui.separator();
                         let label = if read { "Mark as unread" } else { "Mark as read" };
                         if ui.button(label).clicked() {
                             action.mark_read = Some((vec![c.id.clone()], !read));
@@ -961,4 +1064,35 @@ fn skeleton_card(ui: &mut egui::Ui) {
         let (line, _) = ui.allocate_exact_size(vec2(CARD.x * 0.5, 10.0), Sense::hover());
         theme::skeleton(ui, line, 4);
     });
+}
+
+/// Right-click menu for a single-line text box: cut / copy / paste / clear (whole text; the
+/// keyboard shortcuts still work on the selection). Returns true if the text changed.
+pub(crate) fn text_menu(resp: &egui::Response, text: &mut String) -> bool {
+    let mut changed = false;
+    resp.context_menu(|ui| {
+        if ui.add_enabled(!text.is_empty(), egui::Button::new("Cut")).clicked() {
+            ui.ctx().copy_text(std::mem::take(text));
+            changed = true;
+            ui.close();
+        }
+        if ui.add_enabled(!text.is_empty(), egui::Button::new("Copy")).clicked() {
+            ui.ctx().copy_text(text.clone());
+            ui.close();
+        }
+        if ui.button("Paste").clicked() {
+            if let Some(clip) = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()) {
+                text.push_str(clip.lines().next().unwrap_or("").trim());
+                changed = true;
+            }
+            ui.close();
+        }
+        ui.separator();
+        if ui.add_enabled(!text.is_empty(), egui::Button::new("Clear")).clicked() {
+            text.clear();
+            changed = true;
+            ui.close();
+        }
+    });
+    changed
 }

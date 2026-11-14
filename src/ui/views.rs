@@ -186,6 +186,27 @@ pub fn settings(
     ui.add_space(12.0);
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
+        ui.label(RichText::new("Keyboard").strong().size(16.0));
+        egui::Grid::new("keys").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+            for (k, what) in [
+                ("Ctrl+F  or  /", "Search"),
+                ("Ctrl+1 … Ctrl+0", "Pages in sidebar order"),
+                ("F5  or  Ctrl+R", "Reload the listing"),
+                ("Enter (details)", "Continue / start reading"),
+                ("Ctrl+D (details)", "Download every chapter"),
+                ("Esc · Backspace · Alt+←", "Back"),
+                ("Tab / Shift+Tab, Space", "Move between buttons, press"),
+                ("Right-click", "Menus on titles, chapters, pages, the search box"),
+            ] {
+                ui.label(RichText::new(k).strong());
+                ui.label(what);
+                ui.end_row();
+            }
+        });
+    });
+    ui.add_space(12.0);
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.label(RichText::new("Content").strong().size(16.0));
         out.adult_changed = ui
             .checkbox(show_adult, "18+ mode")
