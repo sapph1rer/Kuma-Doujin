@@ -3,115 +3,485 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#16141c">
+<meta name="theme-color" content="#121017">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KumaDoujin">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
 <title>KumaDoujin</title>
 <style>
-  :root { --bg:#16141c; --card:#221f2b; --text:#f2eef7; --muted:#9a93a8; --accent:#ff6b9d; }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Noto Sans Thai", sans-serif; }
-  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px; padding:12px 14px;
-           background:rgba(22,20,28,.94); backdrop-filter: blur(8px); }
-  header h1 { font-size:18px; margin:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  header h1 b { color:var(--accent); }
-  button { background:var(--card); color:var(--text); border:0; border-radius:10px; padding:9px 13px; font-size:15px; }
-  button.accent { background:var(--accent); color:#fff; font-weight:600; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:14px; padding:14px; }
-  .card { cursor:pointer; }
-  .card img, .card .ph { width:100%; aspect-ratio: 5/7; object-fit:cover; border-radius:10px; background:var(--card); display:block; }
-  .card .t { margin-top:6px; font-size:14px; font-weight:600; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-  .card .s { font-size:12px; color:var(--muted); }
-  .list { padding:6px 14px 30px; }
-  .row { display:flex; justify-content:space-between; align-items:center; padding:14px 12px; margin:6px 0;
-         background:var(--card); border-radius:10px; cursor:pointer; }
-  .row .s { color:var(--muted); font-size:13px; }
-  .row.read { opacity:.55; }
-  .empty { padding:40px 20px; text-align:center; color:var(--muted); line-height:1.6; }
-  #reader { background:#000; min-height:100vh; }
-  #reader img { display:block; width:100%; max-width:900px; margin:0 auto; min-height:200px; }
-  #bar { position:fixed; left:0; right:0; top:0; transition: transform .2s; }
-  #bar.hidden { transform: translateY(-110%); }
-  #count { position:fixed; right:10px; bottom:10px; background:rgba(0,0,0,.6); padding:4px 9px; border-radius:8px; font-size:13px; color:#ccc; }
-  .next { display:flex; gap:10px; justify-content:center; padding:24px 14px 60px; }
+  :root {
+    --bg:#121017; --bg2:#1b1822; --card:#241f2e; --line:#2f2939; --text:#f4f0f8; --muted:#9b93aa;
+    --accent:#ff6b9d; --accent2:#ffa2c1; --good:#5cc87a;
+    --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, "Noto Sans Thai", "Segoe UI", sans-serif; }
+  body { overscroll-behavior-y: contain; }
+  button { font:inherit; color:inherit; background:var(--card); border:0; border-radius:12px; padding:10px 14px; cursor:pointer; }
+  button:active { transform: scale(.97); }
+  .accent-btn { background: linear-gradient(135deg, var(--accent), #ff8fb3); color:#fff; font-weight:700; box-shadow: 0 6px 18px rgba(255,107,157,.35); }
+  .icon-btn { width:40px; height:40px; padding:0; border-radius:50%; background:rgba(255,255,255,.08); display:grid; place-items:center; }
+  svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .page { padding-bottom: calc(76px + var(--safe-b)); min-height:100vh; }
+
+  /* top bar */
+  .top { position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:10px;
+         padding: calc(10px + var(--safe-t)) 14px 10px; background:rgba(18,16,23,.86); backdrop-filter: blur(14px); }
+  .brand { display:flex; align-items:center; gap:9px; font-size:20px; font-weight:800; flex:1; }
+  .brand img { width:32px; height:32px; border-radius:9px; }
+  .brand b { color:var(--accent); }
+  .search { margin: 4px 14px 6px; position:relative; }
+  .search input { width:100%; background:var(--card); border:1px solid var(--line); color:var(--text); border-radius:14px;
+                  padding:12px 14px 12px 40px; font-size:15px; outline:none; }
+  .search input:focus { border-color: var(--accent); }
+  .search svg { position:absolute; left:12px; top:12px; width:19px; height:19px; color:var(--muted); }
+  .chips { display:flex; gap:8px; padding: 6px 14px 4px; overflow-x:auto; scrollbar-width:none; }
+  .chip { flex:none; padding:7px 13px; border-radius:20px; font-size:13px; background:var(--card); color:var(--muted); }
+  .chip.on { background: rgba(255,107,157,.18); color: var(--accent2); }
+  h2 { font-size:17px; margin: 18px 14px 10px; display:flex; align-items:center; justify-content:space-between; }
+  h2 small { font-size:13px; color:var(--muted); font-weight:500; }
+
+  /* continue reading carousel */
+  .shelf { display:flex; gap:12px; overflow-x:auto; padding: 0 14px 4px; scroll-snap-type:x mandatory; scrollbar-width:none; }
+  .cont { flex:none; width:78%; max-width:340px; scroll-snap-align:start; display:flex; gap:12px; padding:10px;
+          background:linear-gradient(135deg, #2b2236, #1f1b27); border-radius:16px; cursor:pointer; position:relative; overflow:hidden; }
+  .cont img { width:64px; height:90px; object-fit:cover; border-radius:10px; flex:none; background:var(--card); }
+  .cont .t { font-weight:700; font-size:14px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .cont .s { color:var(--muted); font-size:12.5px; margin-top:4px; }
+  .cont .go { margin-top:8px; display:inline-flex; align-items:center; gap:4px; color:var(--accent2); font-size:13px; font-weight:700; }
+
+  /* grid */
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px 10px; padding: 2px 14px; }
+  @media (min-width: 600px) { .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+  .card { cursor:pointer; min-width:0; }
+  .cover { position:relative; aspect-ratio: 5/7; border-radius:12px; overflow:hidden; background:var(--card); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+  .cover img { width:100%; height:100%; object-fit:cover; display:block; opacity:0; transition: opacity .3s; }
+  .cover img.ok { opacity:1; }
+  .badge { position:absolute; top:6px; left:6px; background:rgba(0,0,0,.65); color:#fff; font-size:11px; font-weight:700;
+           padding:3px 7px; border-radius:8px; backdrop-filter: blur(4px); }
+  .badge.new { left:auto; right:6px; background:var(--accent); }
+  .bar { position:absolute; left:0; right:0; bottom:0; height:4px; background:rgba(255,255,255,.18); }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  .card .t { margin-top:7px; font-size:13px; font-weight:600; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .empty { padding: 60px 30px; text-align:center; color:var(--muted); line-height:1.7; }
+  .empty img { width:96px; height:96px; border-radius:24px; margin-bottom:14px; }
+
+  /* bottom tabs */
+  .tabs { position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; background:rgba(22,19,28,.94);
+          backdrop-filter: blur(14px); border-top:1px solid var(--line); padding-bottom: var(--safe-b); }
+  .tabs a { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:9px 0 8px; color:var(--muted);
+            font-size:11px; text-decoration:none; }
+  .tabs a.on { color:var(--accent); }
+
+  /* title page */
+  .hero { position:relative; padding: calc(56px + var(--safe-t)) 16px 18px; overflow:hidden; }
+  .hero .bg { position:absolute; inset:-30px; background-size:cover; background-position:center; filter: blur(26px) brightness(.45); transform: scale(1.1); }
+  .hero .bg::after { content:""; position:absolute; inset:0; background: linear-gradient(180deg, transparent 40%, var(--bg)); }
+  .hero .back { position:absolute; top: calc(10px + var(--safe-t)); left:12px; z-index:2; }
+  .hero .row { position:relative; display:flex; gap:14px; align-items:flex-end; }
+  .hero .row img { width:118px; aspect-ratio:5/7; object-fit:cover; border-radius:12px; box-shadow: 0 10px 30px rgba(0,0,0,.5); background:var(--card); }
+  .hero h1 { font-size:19px; line-height:1.3; margin:0 0 8px; }
+  .meta { display:flex; flex-wrap:wrap; gap:6px; }
+  .meta span { font-size:12px; background:rgba(255,255,255,.1); padding:4px 9px; border-radius:8px; color:#ddd; }
+  .actions { display:flex; gap:10px; padding: 4px 16px 6px; }
+  .actions .accent-btn { flex:1; padding:14px; font-size:15px; }
+  .chapters { padding: 4px 12px 20px; }
+  .ch { display:flex; align-items:center; gap:12px; padding:13px 12px; border-radius:12px; cursor:pointer; }
+  .ch:active { background:var(--card); }
+  .ch .n { flex:1; min-width:0; }
+  .ch .n div:first-child { font-weight:600; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ch .n div:last-child { color:var(--muted); font-size:12px; margin-top:2px; }
+  .ch.read .n div:first-child { color:var(--muted); font-weight:500; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--accent); flex:none; }
+  .ch.read .dot { background:transparent; border:2px solid var(--line); }
+  .ch .pct { font-size:12px; color:var(--accent2); font-weight:700; }
+
+  /* reader */
+  #reader { position:fixed; inset:0; background:#000; z-index:50; overflow:hidden; }
+  #scroller { position:absolute; inset:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
+  #scroller img { display:block; width:100%; max-width:900px; margin:0 auto; min-height:40vh; background:#111; }
+  #scroller img.loaded { min-height:0; background:none; }
+  #scroller.gap img { margin-bottom:6px; }
+  #pager { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; touch-action: pan-y pinch-zoom; }
+  #pager img { max-width:100%; max-height:100%; object-fit:contain; user-select:none; -webkit-user-drag:none; }
+  #pager.fitw img { width:100%; max-height:none; }
+  #pager.fitw { overflow-y:auto; align-items:flex-start; }
+  .ui { transition: transform .22s ease, opacity .22s ease; }
+  .rtop { position:absolute; top:0; left:0; right:0; z-index:5; display:flex; align-items:center; gap:10px;
+          padding: calc(8px + var(--safe-t)) 10px 10px; background: linear-gradient(rgba(0,0,0,.85), rgba(0,0,0,.55)); }
+  .rtop .t { flex:1; min-width:0; }
+  .rtop .t div:first-child { font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rtop .t div:last-child { color:#bbb; font-size:12px; }
+  .rbot { position:absolute; bottom:0; left:0; right:0; z-index:5; padding: 10px 12px calc(12px + var(--safe-b));
+          background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,.88)); display:flex; align-items:center; gap:10px; }
+  .rbot input[type=range] { flex:1; accent-color: var(--accent); }
+  .rbot .pg { min-width:62px; text-align:center; font-size:13px; color:#ddd; font-variant-numeric: tabular-nums; }
+  #reader.hide-ui .rtop { transform: translateY(-110%); opacity:0; }
+  #reader.hide-ui .rbot { transform: translateY(110%); opacity:0; }
+  #dim { position:absolute; inset:0; pointer-events:none; z-index:4; }
+  .endcard { padding: 40px 20px 120px; text-align:center; color:#ccc; }
+  .endcard .accent-btn { margin-top:14px; padding:14px 26px; font-size:15px; }
+  .mini { position:absolute; right:10px; bottom: calc(12px + var(--safe-b)); z-index:3; background:rgba(0,0,0,.55);
+          padding:3px 9px; border-radius:9px; font-size:12px; color:#ccc; font-variant-numeric: tabular-nums; }
+  #reader:not(.hide-ui) .mini { display:none; }
+
+  /* bottom sheet */
+  .sheet-bg { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:60; }
+  .sheet { position:fixed; left:0; right:0; bottom:0; z-index:61; background:var(--bg2); border-radius:20px 20px 0 0;
+           padding: 8px 18px calc(20px + var(--safe-b)); animation: up .22s ease; }
+  @keyframes up { from { transform: translateY(100%); } }
+  .sheet .grab { width:40px; height:5px; border-radius:3px; background:var(--line); margin: 4px auto 14px; }
+  .sheet h3 { margin: 0 0 14px; font-size:17px; }
+  .opt { margin-bottom:16px; }
+  .opt label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .seg { display:flex; background:var(--card); border-radius:12px; padding:3px; }
+  .seg button { flex:1; background:none; padding:9px 4px; font-size:13.5px; border-radius:10px; color:var(--muted); }
+  .seg button.on { background:var(--accent); color:#fff; font-weight:700; }
+  .opt input[type=range] { width:100%; accent-color: var(--accent); }
+  .toast { position:fixed; left:50%; top: calc(70px + var(--safe-t)); transform:translateX(-50%); z-index:70; background:rgba(30,26,38,.95);
+           padding:10px 16px; border-radius:12px; font-size:14px; box-shadow:0 8px 24px rgba(0,0,0,.4); animation: fade 2.2s forwards; }
+  @keyframes fade { 0%{opacity:0;transform:translate(-50%,-8px)} 10%,80%{opacity:1;transform:translate(-50%,0)} 100%{opacity:0} }
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script>
 const key = new URLSearchParams(location.search).get('k') || '';
-const q = (o) => Object.entries({ ...o, k: key }).map(([a, b]) => a + '=' + encodeURIComponent(b)).join('&');
-const app = document.getElementById('app');
+// ids go inside onclick='…' strings: encode the quote too
+const enc = (s) => encodeURIComponent(s).replace(/'/g, '%27');
+const q = (o) => Object.entries({ ...o, k: key }).map(([a, b]) => a + '=' + enc(b)).join('&');
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ico = {
+  back: '<svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>',
+  lib: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>',
+  hist: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  full: '<svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+  prev: '<svg viewBox="0 0 24 24"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>',
+  next: '<svg viewBox="0 0 24 24"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>',
+  play: '<svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M8 5v14l11-7z"/></svg>',
+  sort: '<svg viewBox="0 0 24 24"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>',
+};
+
+// ---------- storage (per phone)
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const wid = (w) => w.source + '/' + w.id;
+const prog = (w, c) => store.get('p:' + wid(w) + '/' + c.id, null); // {page, done}
+const setProg = (w, c, page) => {
+  const done = page >= c.pages - 1;
+  const old = prog(w, c) || {};
+  store.set('p:' + wid(w) + '/' + c.id, { page, done: done || !!old.done });
+  const hist = store.get('history', []).filter((h) => h.w !== wid(w));
+  hist.unshift({ w: wid(w), c: c.id, page, t: Date.now() });
+  store.set('history', hist.slice(0, 30));
+};
+let prefs = Object.assign({ mode: 'vertical', dir: 'rtl', fit: 'screen', bright: 1, warm: false, gap: false, sort: 'recent' }, store.get('prefs', {}));
+const savePrefs = () => store.set('prefs', prefs);
+
 let lib = [];
-const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const readKey = (w, c) => 'read:' + w.source + '/' + w.id + '/' + c.id;
-const posKey = (w, c) => 'pos:' + w.source + '/' + w.id + '/' + c.id;
+const byKey = (k) => lib.find((w) => wid(w) === k);
+const coverUrl = (w) => '/cover?' + q({ s: w.source, m: w.id });
+const pageUrl = (w, c, i) => '/page?' + q({ s: w.source, m: w.id, c: c.id, i });
+const route = (h) => { location.hash = h; };
+function toast(t) { const d = document.createElement('div'); d.className = 'toast'; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 2300); }
+function workStats(w) {
+  const read = w.chapters.filter((c) => (prog(w, c) || {}).done).length;
+  return { read, total: w.chapters.length, pct: w.chapters.length ? read / w.chapters.length : 0 };
+}
+function resumePoint(w) {
+  const h = store.get('history', []).find((x) => x.w === wid(w));
+  if (h) { const c = w.chapters.find((c) => c.id === h.c); if (c) return { c, page: h.page }; }
+  const c = w.chapters.find((c) => !(prog(w, c) || {}).done) || w.chapters[0];
+  return c ? { c, page: (prog(w, c) || {}).page || 0 } : null;
+}
+const imgTag = (src, cls = '') => '<img class="' + cls + '" loading="lazy" src="' + src + '" onload="this.classList.add(\'ok\')" onerror="this.style.display=\'none\'">';
 
 async function load() {
-  const r = await fetch('/api/library?' + q({}));
-  if (!r.ok) { app.innerHTML = '<div class="empty">' + esc(await r.text()) + '</div>'; return; }
-  lib = await r.json();
-  route();
-}
-
-function home() {
-  document.title = 'KumaDoujin';
-  if (!lib.length) {
-    app.innerHTML = '<header><h1>Kuma<b>Doujin</b></h1></header><div class="empty">ยังไม่มีเรื่องที่ดาวน์โหลดไว้<br>ดาวน์โหลดตอนในแอปบนคอมก่อน แล้วกลับมาที่หน้านี้</div>';
+  const r = await fetch('/api/library?' + q({})).catch(() => null);
+  if (!r || !r.ok) {
+    $('#app').innerHTML = '<div class="empty"><img src="/icon.png"><br>' + (r ? esc(await r.text()) : 'เชื่อมต่อคอมไม่ได้ ตรวจว่ามือถืออยู่ Wi-Fi เดียวกันและเปิดแอปไว้') + '</div>';
     return;
   }
-  app.innerHTML = '<header><h1>Kuma<b>Doujin</b></h1><button onclick="load()">↻</button></header><div class="grid">' +
-    lib.map((w, i) => '<div class="card" onclick="location.hash=\'#/w/' + i + '\'">' +
-      '<img loading="lazy" src="/cover?' + q({ s: w.source, m: w.id }) + '" onerror="this.outerHTML=\'<div class=ph></div>\'">' +
-      '<div class="t">' + esc(w.title) + '</div><div class="s">' + w.chapters.length + ' ตอน</div></div>').join('') + '</div>';
+  lib = await r.json();
+  const m = document.createElement('link'); m.rel = 'manifest'; m.href = '/manifest.webmanifest?' + q({}); document.head.appendChild(m);
+  render();
 }
 
-function work(i) {
-  const w = lib[i]; if (!w) return home();
-  document.title = w.title;
-  app.innerHTML = '<header><button onclick="location.hash=\'\'">‹</button><h1>' + esc(w.title) + '</h1></header><div class="list">' +
-    w.chapters.map((c, ci) => '<div class="row' + (localStorage.getItem(readKey(w, c)) ? ' read' : '') +
-      '" onclick="location.hash=\'#/r/' + i + '/' + ci + '\'"><span>' + esc(c.label) + '</span><span class="s">' +
-      c.pages + ' หน้า</span></div>').join('') + '</div>';
+function tabs(on) {
+  const t = (id, h, label, svg) => '<a class="' + (on === id ? 'on' : '') + '" href="' + h + '">' + svg + label + '</a>';
+  return '<nav class="tabs">' + t('lib', '#', 'คลัง', ico.lib) + t('hist', '#/history', 'อ่านต่อ', ico.hist) + t('search', '#/search', 'ค้นหา', ico.search) + '</nav>';
 }
 
-function reader(i, ci) {
-  const w = lib[i], c = w && w.chapters[ci]; if (!c) return home();
-  document.title = c.label + ' · ' + w.title;
-  const imgs = Array.from({ length: c.pages }, (_, p) =>
-    '<img loading="lazy" data-p="' + p + '" src="/page?' + q({ s: w.source, m: w.id, c: c.id, i: p }) + '">').join('');
-  const prev = ci > 0 ? '<button onclick="location.hash=\'#/r/' + i + '/' + (ci - 1) + '\'">‹ ตอนก่อน</button>' : '';
-  const next = ci + 1 < w.chapters.length ? '<button class="accent" onclick="location.hash=\'#/r/' + i + '/' + (ci + 1) + '\'">ตอนถัดไป ›</button>' : '';
-  app.innerHTML = '<div id="reader"><header id="bar"><button onclick="location.hash=\'#/w/' + i + '\'">‹</button><h1>' +
-    esc(c.label) + '</h1></header>' + imgs + '<div class="next">' + prev + (next || '<button onclick="location.hash=\'#/w/' + i + '\'">จบแล้ว</button>') +
-    '</div><div id="count"></div></div>';
-  const bar = document.getElementById('bar'), count = document.getElementById('count');
-  const pages = Array.from(document.querySelectorAll('#reader img'));
-  const saved = +localStorage.getItem(posKey(w, c)) || 0;
-  if (saved > 0 && pages[saved]) setTimeout(() => pages[saved].scrollIntoView(), 50); else window.scrollTo(0, 0);
-  let lastY = 0;
-  const onScroll = () => {
-    const y = window.scrollY;
-    bar.classList.toggle('hidden', y > lastY && y > 80);
-    lastY = y;
-    const cur = pages.findIndex((im) => im.getBoundingClientRect().bottom > window.innerHeight * 0.4);
-    if (cur >= 0) {
-      count.textContent = (cur + 1) + ' / ' + c.pages;
-      localStorage.setItem(posKey(w, c), cur);
-      if (cur >= c.pages - 1) localStorage.setItem(readKey(w, c), '1');
-    }
+function cardHtml(w) {
+  const s = workStats(w);
+  const started = store.get('history', []).some((h) => h.w === wid(w));
+  return '<div class="card" onclick="route(\'#/w/' + enc(wid(w)) + '\')"><div class="cover">' + imgTag(coverUrl(w)) +
+    '<span class="badge">' + s.total + ' ตอน</span>' + (!started ? '<span class="badge new">ใหม่</span>' : '') +
+    (s.read ? '<div class="bar"><i style="width:' + Math.round(s.pct * 100) + '%"></i></div>' : '') +
+    '</div><div class="t">' + esc(w.title) + '</div></div>';
+}
+
+function continueShelf() {
+  const items = store.get('history', []).map((h) => ({ h, w: byKey(h.w) })).filter((x) => x.w).slice(0, 10);
+  if (!items.length) return '';
+  return '<h2>อ่านต่อ <small>' + items.length + ' เรื่อง</small></h2><div class="shelf">' + items.map(({ h, w }) => {
+    const c = w.chapters.find((c) => c.id === h.c) || w.chapters[0];
+    return '<div class="cont" onclick="openReader(\'' + enc(wid(w)) + '\',\'' + enc(c.id) + '\')">' + '<img src="' + coverUrl(w) + '">' +
+      '<div><div class="t">' + esc(w.title) + '</div><div class="s">' + esc(c.label) + ' · หน้า ' + (h.page + 1) + '/' + c.pages + '</div>' +
+      '<div class="go">' + ico.play + 'อ่านต่อ</div></div></div>';
+  }).join('') + '</div>';
+}
+
+function sorted(list) {
+  const hist = store.get('history', []);
+  const recent = (w) => { const i = hist.findIndex((h) => h.w === wid(w)); return i < 0 ? 1e9 : i; };
+  const l = [...list];
+  if (prefs.sort === 'recent') l.sort((a, b) => recent(a) - recent(b));
+  if (prefs.sort === 'az') l.sort((a, b) => a.title.localeCompare(b.title, 'th'));
+  if (prefs.sort === 'most') l.sort((a, b) => b.chapters.length - a.chapters.length);
+  return l;
+}
+
+function home(searchMode) {
+  document.title = 'KumaDoujin';
+  if (!lib.length) {
+    $('#app').innerHTML = '<div class="page"><div class="top"><div class="brand"><img src="/icon.png"><span>Kuma<b>Doujin</b></span></div></div>' +
+      '<div class="empty"><img src="/icon.png"><br>ยังไม่มีเรื่องที่ดาวน์โหลดไว้<br>ดาวน์โหลดตอนในแอปบนคอม แล้วกด ↻ ที่นี่</div></div>' + tabs('lib');
+    return;
+  }
+  const chip = (id, label) => '<button class="chip ' + (prefs.sort === id ? 'on' : '') + '" onclick="prefs.sort=\'' + id + '\';savePrefs();render()">' + label + '</button>';
+  $('#app').innerHTML = '<div class="page"><div class="top"><div class="brand"><img src="/icon.png"><span>Kuma<b>Doujin</b></span></div>' +
+    '<button class="icon-btn" onclick="load()" title="รีเฟรช">↻</button></div>' +
+    '<div class="search">' + ico.search + '<input id="find" placeholder="ค้นหาเรื่องในคลัง…" autocomplete="off"></div>' +
+    (searchMode ? '' : continueShelf()) +
+    '<h2>คลังของฉัน <small>' + lib.length + ' เรื่อง</small></h2>' +
+    '<div class="chips">' + chip('recent', 'อ่านล่าสุด') + chip('az', 'ชื่อ ก–ฮ / A–Z') + chip('most', 'ตอนเยอะสุด') + '</div>' +
+    '<div class="grid" id="grid"></div></div>' + tabs(searchMode ? 'search' : 'lib');
+  const draw = (needle) => {
+    const n = needle.trim().toLowerCase();
+    const list = sorted(lib).filter((w) => !n || w.title.toLowerCase().includes(n));
+    $('#grid').innerHTML = list.length ? list.map(cardHtml).join('') : '<div class="empty" style="grid-column:1/-1">ไม่พบเรื่องที่ค้นหา</div>';
   };
-  window.onscroll = onScroll;
-  document.getElementById('reader').onclick = (e) => { if (e.target.tagName === 'IMG') bar.classList.toggle('hidden'); };
-  onScroll();
+  const f = $('#find');
+  f.oninput = () => draw(f.value);
+  draw('');
+  if (searchMode) f.focus();
 }
 
-function route() {
-  window.onscroll = null;
-  const m = location.hash.match(/^#\/(w|r)\/(\d+)(?:\/(\d+))?/);
-  if (!m) return home();
-  if (m[1] === 'w') return work(+m[2]);
-  reader(+m[2], +m[3]);
+function historyPage() {
+  document.title = 'อ่านต่อ · KumaDoujin';
+  const items = store.get('history', []).map((h) => ({ h, w: byKey(h.w) })).filter((x) => x.w);
+  $('#app').innerHTML = '<div class="page"><div class="top"><div class="brand">อ่านต่อ</div>' +
+    (items.length ? '<button class="chip" onclick="if(confirm(\'ล้างประวัติการอ่านบนมือถือนี้?\')){store.set(\'history\',[]);render()}">ล้าง</button>' : '') + '</div>' +
+    (items.length ? '<div class="chapters">' + items.map(({ h, w }) => {
+      const c = w.chapters.find((c) => c.id === h.c) || w.chapters[0];
+      const ago = Math.max(1, Math.round((Date.now() - h.t) / 60000));
+      const when = ago < 60 ? ago + ' นาทีที่แล้ว' : ago < 1440 ? Math.round(ago / 60) + ' ชม.ที่แล้ว' : Math.round(ago / 1440) + ' วันที่แล้ว';
+      return '<div class="cont" style="width:auto;max-width:none;margin-bottom:10px" onclick="openReader(\'' + enc(wid(w)) + '\',\'' + enc(c.id) + '\')"><img src="' + coverUrl(w) + '">' +
+        '<div><div class="t">' + esc(w.title) + '</div><div class="s">' + esc(c.label) + ' · หน้า ' + (h.page + 1) + '/' + c.pages + ' · ' + when + '</div><div class="go">' + ico.play + 'อ่านต่อ</div></div></div>';
+    }).join('') + '</div>' : '<div class="empty">ยังไม่ได้อ่านเรื่องไหนบนมือถือนี้</div>') + '</div>' + tabs('hist');
 }
-window.onhashchange = route;
+
+function workPage(k) {
+  const w = byKey(k); if (!w) return home();
+  document.title = w.title;
+  const s = workStats(w), rp = resumePoint(w);
+  const pages = w.chapters.reduce((a, c) => a + c.pages, 0);
+  const desc = prefs.chDesc;
+  const list = desc ? [...w.chapters].reverse() : w.chapters;
+  const started = store.get('history', []).some((h) => h.w === wid(w));
+  $('#app').innerHTML = '<div class="page"><div class="hero"><div class="bg" style="background-image:url(\'' + coverUrl(w) + '\')"></div>' +
+    '<button class="icon-btn back" onclick="history.length>1?history.back():route(\'#\')">' + ico.back + '</button>' +
+    '<div class="row"><img src="' + coverUrl(w) + '"><div><h1>' + esc(w.title) + '</h1><div class="meta"><span>' + s.total + ' ตอน</span><span>' + pages + ' หน้า</span>' +
+    (s.read ? '<span>อ่านแล้ว ' + s.read + '/' + s.total + '</span>' : '') + '</div></div></div></div>' +
+    '<div class="actions"><button class="accent-btn" id="go">' + ico.play.replace('<svg', '<svg style="vertical-align:-5px;margin-right:6px"') +
+    (started && rp ? 'อ่านต่อ · ' + esc(rp.c.label) : 'เริ่มอ่าน') + '</button></div>' +
+    '<h2>ตอนทั้งหมด <button class="chip" onclick="prefs.chDesc=!prefs.chDesc;savePrefs();render()">' + (desc ? 'ใหม่ → เก่า' : 'เก่า → ใหม่') + '</button></h2>' +
+    '<div class="chapters">' + list.map((c) => {
+      const p = prog(w, c) || {};
+      const state = p.done ? '' : p.page ? '<span class="pct">' + Math.round((p.page + 1) / c.pages * 100) + '%</span>' : '';
+      return '<div class="ch ' + (p.done ? 'read' : '') + '" onclick="openReader(\'' + enc(wid(w)) + '\',\'' + enc(c.id) + '\')"><span class="dot"></span>' +
+        '<div class="n"><div>' + esc(c.label) + '</div><div>' + c.pages + ' หน้า' + (p.done ? ' · อ่านแล้ว' : '') + '</div></div>' + state + '</div>';
+    }).join('') + '</div></div>' + tabs('lib');
+  $('#go').onclick = () => rp && openReader(wid(w), rp.c.id);
+}
+
+// ---------- reader
+let R = null; // { w, ci, page }
+function openReader(k, cid) { route('#/r/' + enc(decodeURIComponent(k)) + '/' + enc(decodeURIComponent(cid))); }
+
+function reader(k, cid) {
+  const w = byKey(k); if (!w) return home();
+  const ci = Math.max(0, w.chapters.findIndex((c) => c.id === cid));
+  const c = w.chapters[ci];
+  const start = Math.min((prog(w, c) || {}).done ? 0 : (prog(w, c) || {}).page || 0, c.pages - 1);
+  R = { w, ci, c, page: start, target: start };
+  document.title = c.label + ' · ' + w.title;
+  const paged = prefs.mode === 'paged';
+  $('#app').innerHTML = '<div id="reader">' +
+    (paged ? '<div id="pager" class="' + (prefs.fit === 'width' ? 'fitw' : '') + '"><img id="pimg"></div>'
+           : '<div id="scroller" class="' + (prefs.gap ? 'gap' : '') + '">' +
+             Array.from({ length: c.pages }, (_, i) => '<img data-i="' + i + '" loading="lazy" src="' + pageUrl(w, c, i) + '" onload="this.classList.add(\'loaded\')">').join('') +
+             '<div class="endcard">จบ ' + esc(c.label) + (w.chapters[ci + 1] ? '<br><button class="accent-btn" onclick="goChapter(1)">ตอนถัดไป · ' + esc(w.chapters[ci + 1].label) + '</button>' : '<br><br>จบทุกตอนที่ดาวน์โหลดไว้แล้ว 🎉<br><button class="accent-btn" onclick="route(\'#/w/' + enc(wid(w)) + '\')">กลับหน้าเรื่อง</button>') + '</div></div>') +
+    '<div id="dim"></div>' +
+    '<div class="rtop ui"><button class="icon-btn" onclick="route(\'#/w/' + enc(wid(w)) + '\')">' + ico.back + '</button>' +
+    '<div class="t"><div>' + esc(c.label) + '</div><div>' + esc(w.title) + '</div></div>' +
+    '<button class="icon-btn" onclick="fullscreen()">' + ico.full + '</button><button class="icon-btn" onclick="settings()">' + ico.gear + '</button></div>' +
+    '<div class="rbot ui"><button class="icon-btn" onclick="goChapter(-1)" ' + (ci ? '' : 'disabled style="opacity:.35"') + '>' + ico.prev + '</button>' +
+    '<input type="range" id="slider" min="1" max="' + c.pages + '" value="' + (start + 1) + '"><span class="pg" id="pg"></span>' +
+    '<button class="icon-btn" onclick="goChapter(1)" ' + (w.chapters[ci + 1] ? '' : 'disabled style="opacity:.35"') + '>' + ico.next + '</button></div>' +
+    '<div class="mini" id="mini"></div></div>';
+  applyDim();
+  $('#slider').oninput = (e) => { R.target = +e.target.value - 1; showPage(R.target, true); };
+  if (paged) setupPaged(); else setupScroll();
+  showPage(start, true);
+}
+
+function applyDim() {
+  const d = $('#dim'); if (!d) return;
+  const a = 1 - prefs.bright;
+  d.style.background = prefs.warm ? 'rgba(255,140,40,' + (0.12 + a * 0.15) + ')' : 'transparent';
+  d.style.boxShadow = 'inset 0 0 0 100vmax rgba(0,0,0,' + a + ')';
+  d.style.mixBlendMode = prefs.warm ? 'multiply' : 'normal';
+}
+
+function showPage(i, jump) {
+  const { w, c } = R;
+  i = Math.max(0, Math.min(c.pages - 1, i));
+  R.page = i;
+  $('#pg').textContent = (i + 1) + ' / ' + c.pages;
+  $('#mini').textContent = (i + 1) + ' / ' + c.pages;
+  $('#slider').value = i + 1;
+  setProg(w, c, i);
+  if (prefs.mode === 'paged') {
+    const img = $('#pimg');
+    img.src = pageUrl(w, c, i);
+    for (let k = 1; k <= 3; k++) if (i + k < c.pages) new Image().src = pageUrl(w, c, i + k); // preload
+    if (prefs.fit === 'width') $('#pager').scrollTop = 0;
+  } else if (jump) {
+    const el = $('#scroller img[data-i="' + i + '"]');
+    if (el) el.scrollIntoView();
+  }
+}
+
+function setupScroll() {
+  const sc = $('#scroller');
+  const imgs = Array.from(sc.querySelectorAll('img'));
+  let ticking = false, lastTop = 0, user = false;
+  // pages above the resume point load late and push it down: keep it in view until the reader acts
+  const holdPlace = () => { if (!user) { const el = imgs[R.target]; if (el) el.scrollIntoView(); } };
+  imgs.forEach((im) => im.addEventListener('load', () => { if (+im.dataset.i < R.target) holdPlace(); }));
+  const touched = () => { user = true; };
+  sc.addEventListener('touchstart', touched, { passive: true });
+  sc.addEventListener('wheel', touched, { passive: true });
+  sc.addEventListener('keydown', touched);
+  sc.onscroll = () => {
+    if (ticking) return; ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      const mid = window.innerHeight * 0.4;
+      let cur = 0;
+      for (const im of imgs) { if (im.getBoundingClientRect().top <= mid) cur = +im.dataset.i; else break; }
+      if (user && cur !== R.page) showPage(cur, false);
+      // hide the bars once the reader scrolls (not on images loading in)
+      if (user && Math.abs(sc.scrollTop - lastTop) > 60) { $('#reader').classList.add('hide-ui'); lastTop = sc.scrollTop; }
+      if (!user) lastTop = sc.scrollTop;
+    });
+  };
+  sc.onclick = (e) => { if (!e.target.closest('button')) $('#reader').classList.toggle('hide-ui'); };
+}
+
+function setupPaged() {
+  const pg = $('#pager');
+  const turn = (d) => {
+    const n = R.page + d;
+    if (n >= R.c.pages) return goChapter(1);
+    if (n < 0) return goChapter(-1, true);
+    showPage(n, true);
+  };
+  pg.onclick = (e) => {
+    const x = e.clientX / window.innerWidth;
+    const fwd = prefs.dir === 'rtl' ? x < 0.33 : x > 0.67;
+    const back = prefs.dir === 'rtl' ? x > 0.67 : x < 0.33;
+    if (fwd) turn(1); else if (back) turn(-1); else $('#reader').classList.toggle('hide-ui');
+  };
+  let sx = 0, sy = 0;
+  pg.addEventListener('touchstart', (e) => { if (e.touches.length === 1) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; } }, { passive: true });
+  pg.addEventListener('touchend', (e) => {
+    if (e.changedTouches.length !== 1 || (window.visualViewport && window.visualViewport.scale > 1.05)) return; // zoomed: let it pan
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) turn((dx < 0) === (prefs.dir === 'ltr') ? 1 : -1);
+  });
+}
+
+function goChapter(d, toEnd) {
+  const { w, ci } = R; const n = w.chapters[ci + d];
+  if (!n) { toast(d > 0 ? 'นี่คือตอนล่าสุดที่ดาวน์โหลดไว้' : 'นี่คือตอนแรก'); return; }
+  if (toEnd) store.set('p:' + wid(w) + '/' + n.id, { page: n.pages - 1, done: !!(prog(w, n) || {}).done });
+  toast(n.label);
+  history.replaceState(null, '', '#/r/' + enc(wid(w)) + '/' + enc(n.id));
+  reader(wid(w), n.id);
+}
+
+function fullscreen() {
+  const el = document.documentElement;
+  if (document.fullscreenElement) document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast('เบราว์เซอร์นี้ไม่รองรับเต็มจอ — ลอง "เพิ่มไปยังหน้าจอโฮม"'));
+  else toast('ใช้ "เพิ่มไปยังหน้าจอโฮม" เพื่ออ่านแบบเต็มจอ');
+}
+
+function settings() {
+  const seg = (k, opts) => '<div class="seg">' + opts.map(([v, l]) => '<button class="' + (prefs[k] === v ? 'on' : '') + '" data-k="' + k + '" data-v="' + v + '">' + l + '</button>').join('') + '</div>';
+  const bg = document.createElement('div'); bg.className = 'sheet-bg';
+  const sh = document.createElement('div'); sh.className = 'sheet';
+  sh.innerHTML = '<div class="grab"></div><h3>ตั้งค่าการอ่าน</h3>' +
+    '<div class="opt"><label>รูปแบบ</label>' + seg('mode', [['vertical', 'เลื่อนลง (เว็บตูน)'], ['paged', 'ทีละหน้า']]) + '</div>' +
+    '<div class="opt"><label>ทิศทางเปลี่ยนหน้า (ทีละหน้า)</label>' + seg('dir', [['rtl', 'ขวา → ซ้าย (มังงะ)'], ['ltr', 'ซ้าย → ขวา']]) + '</div>' +
+    '<div class="opt"><label>ขนาดภาพ (ทีละหน้า)</label>' + seg('fit', [['screen', 'พอดีจอ'], ['width', 'เต็มความกว้าง']]) + '</div>' +
+    '<div class="opt"><label>ช่องว่างระหว่างหน้า (เลื่อนลง)</label>' + seg('gap', [[false, 'ไม่มี'], [true, 'มี']]) + '</div>' +
+    '<div class="opt"><label>ความสว่าง</label><input type="range" id="br" min="0.3" max="1" step="0.05" value="' + prefs.bright + '"></div>' +
+    '<div class="opt"><label>ถนอมสายตา (โทนอุ่น)</label>' + seg('warm', [[false, 'ปิด'], [true, 'เปิด']]) + '</div>';
+  const close = () => { bg.remove(); sh.remove(); };
+  bg.onclick = close;
+  sh.onclick = (e) => {
+    const b = e.target.closest('button[data-k]'); if (!b) return;
+    const k = b.dataset.k; let v = b.dataset.v; if (v === 'true') v = true; if (v === 'false') v = false;
+    const relayout = prefs[k] !== v && (k === 'mode' || k === 'fit' || k === 'gap');
+    prefs[k] = v; savePrefs();
+    sh.querySelectorAll('button[data-k="' + k + '"]').forEach((x) => x.classList.toggle('on', x === b));
+    applyDim();
+    if (relayout) { const p = R.page; close(); reader(wid(R.w), R.c.id); showPage(p, true); }
+  };
+  document.body.append(bg, sh);
+  $('#br').oninput = (e) => { prefs.bright = +e.target.value; savePrefs(); applyDim(); };
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!R || !$('#reader')) return;
+  const fwd = { ArrowRight: prefs.dir === 'ltr' ? 1 : -1, ArrowLeft: prefs.dir === 'ltr' ? -1 : 1, ' ': 1, PageDown: 1, PageUp: -1 }[e.key];
+  if (prefs.mode === 'paged' && fwd) { e.preventDefault(); const n = R.page + fwd; n >= R.c.pages ? goChapter(1) : n < 0 ? goChapter(-1, true) : showPage(n, true); }
+  if (e.key === 'Escape') route('#/w/' + enc(wid(R.w)));
+});
+
+function render() {
+  R = null;
+  document.querySelectorAll('.sheet,.sheet-bg').forEach((x) => x.remove());
+  const h = location.hash;
+  let m;
+  if ((m = h.match(/^#\/r\/([^/]+)\/(.+)$/))) return reader(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+  if ((m = h.match(/^#\/w\/(.+)$/))) return workPage(decodeURIComponent(m[1]));
+  if (h === '#/history') return historyPage();
+  if (h === '#/search') return home(true);
+  home(false);
+  window.scrollTo(0, 0);
+}
+window.onhashchange = render;
 load();
 </script>
 </body>

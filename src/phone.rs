@@ -99,12 +99,31 @@ fn handle(dl: &Downloads, key: &str, raw: &str) -> Resp {
         return text(400, "bad request");
     };
     let q = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned());
+    // the app icon is public (phones fetch it for the home screen without the link's key)
+    if url.path() == "/icon.png" {
+        return Response::from_data(include_bytes!("../assets/kuma.png").to_vec())
+            .with_header(header("Content-Type", "image/png"))
+            .with_header(header("Cache-Control", "public, max-age=86400"));
+    }
     if q("k").as_deref() != Some(key) {
         return text(403, "Scan the QR code in KumaDoujin › Settings › Read on your phone.");
     }
     let work = || Some(MangaKey { source: q("s")?, id: q("m")? });
     match url.path() {
         "/" => Response::from_string(INDEX).with_header(header("Content-Type", "text/html; charset=utf-8")),
+        // "Add to Home screen": opens straight into the library, full screen
+        "/manifest.webmanifest" => {
+            let m = serde_json::json!({
+                "name": "KumaDoujin",
+                "short_name": "KumaDoujin",
+                "start_url": format!("/?k={key}"),
+                "display": "standalone",
+                "background_color": "#121017",
+                "theme_color": "#121017",
+                "icons": [{ "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }]
+            });
+            Response::from_data(m.to_string().into_bytes()).with_header(header("Content-Type", "application/manifest+json"))
+        }
         "/api/library" => {
             let list: Vec<Work> = dl
                 .list()
@@ -156,6 +175,9 @@ mod tests {
         assert_eq!(handle(&dl, "abc", "/api/library").status_code().0, 403);
         assert_eq!(handle(&dl, "abc", "/api/library?k=nope").status_code().0, 403);
         assert_eq!(handle(&dl, "abc", "/?k=abc").status_code().0, 200);
+        assert_eq!(handle(&dl, "abc", "/icon.png").status_code().0, 200);
+        assert_eq!(handle(&dl, "abc", "/manifest.webmanifest").status_code().0, 403);
+        assert_eq!(handle(&dl, "abc", "/manifest.webmanifest?k=abc").status_code().0, 200);
         assert_eq!(handle(&dl, "abc", "/page?k=abc&s=s&m=m&c=c1&i=0").status_code().0, 200);
         assert_eq!(handle(&dl, "abc", "/page?k=abc&s=s&m=m&c=c1&i=1").status_code().0, 404);
         // a traversal attempt is just another (hashed, missing) folder name
