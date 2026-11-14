@@ -7,6 +7,7 @@ pub mod database;
 pub mod discovery;
 pub mod downloads;
 pub mod network;
+pub mod phone;
 pub mod reader;
 pub mod sources;
 pub mod ui;

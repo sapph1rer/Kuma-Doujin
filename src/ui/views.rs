@@ -241,3 +241,20 @@ pub fn settings(
     });
     out
 }
+
+/// Draws `text` as a QR code, `size` points square, on a white tile (scannable in dark mode).
+pub fn qr_code(ui: &mut egui::Ui, text: &str, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 10, egui::Color32::WHITE);
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return };
+    let w = code.width();
+    const QUIET: usize = 2;
+    let cell = size / (w + 2 * QUIET) as f32;
+    for (i, c) in code.to_colors().iter().enumerate() {
+        if *c == qrcode::Color::Dark {
+            let (x, y) = ((i % w + QUIET) as f32, (i / w + QUIET) as f32);
+            let r = egui::Rect::from_min_size(rect.min + egui::vec2(x * cell, y * cell), egui::vec2(cell + 0.5, cell + 0.5));
+            ui.painter().rect_filled(r, 0, egui::Color32::BLACK);
+        }
+    }
+}

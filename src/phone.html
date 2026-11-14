@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16141c">
+<title>KumaDoujin</title>
+<style>
+  :root { --bg:#16141c; --card:#221f2b; --text:#f2eef7; --muted:#9a93a8; --accent:#ff6b9d; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Noto Sans Thai", sans-serif; }
+  header { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px; padding:12px 14px;
+           background:rgba(22,20,28,.94); backdrop-filter: blur(8px); }
+  header h1 { font-size:18px; margin:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  header h1 b { color:var(--accent); }
+  button { background:var(--card); color:var(--text); border:0; border-radius:10px; padding:9px 13px; font-size:15px; }
+  button.accent { background:var(--accent); color:#fff; font-weight:600; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:14px; padding:14px; }
+  .card { cursor:pointer; }
+  .card img, .card .ph { width:100%; aspect-ratio: 5/7; object-fit:cover; border-radius:10px; background:var(--card); display:block; }
+  .card .t { margin-top:6px; font-size:14px; font-weight:600; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .card .s { font-size:12px; color:var(--muted); }
+  .list { padding:6px 14px 30px; }
+  .row { display:flex; justify-content:space-between; align-items:center; padding:14px 12px; margin:6px 0;
+         background:var(--card); border-radius:10px; cursor:pointer; }
+  .row .s { color:var(--muted); font-size:13px; }
+  .row.read { opacity:.55; }
+  .empty { padding:40px 20px; text-align:center; color:var(--muted); line-height:1.6; }
+  #reader { background:#000; min-height:100vh; }
+  #reader img { display:block; width:100%; max-width:900px; margin:0 auto; min-height:200px; }
+  #bar { position:fixed; left:0; right:0; top:0; transition: transform .2s; }
+  #bar.hidden { transform: translateY(-110%); }
+  #count { position:fixed; right:10px; bottom:10px; background:rgba(0,0,0,.6); padding:4px 9px; border-radius:8px; font-size:13px; color:#ccc; }
+  .next { display:flex; gap:10px; justify-content:center; padding:24px 14px 60px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const key = new URLSearchParams(location.search).get('k') || '';
+const q = (o) => Object.entries({ ...o, k: key }).map(([a, b]) => a + '=' + encodeURIComponent(b)).join('&');
+const app = document.getElementById('app');
+let lib = [];
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const readKey = (w, c) => 'read:' + w.source + '/' + w.id + '/' + c.id;
+const posKey = (w, c) => 'pos:' + w.source + '/' + w.id + '/' + c.id;
+
+async function load() {
+  const r = await fetch('/api/library?' + q({}));
+  if (!r.ok) { app.innerHTML = '<div class="empty">' + esc(await r.text()) + '</div>'; return; }
+  lib = await r.json();
+  route();
+}
+
+function home() {
+  document.title = 'KumaDoujin';
+  if (!lib.length) {
+    app.innerHTML = '<header><h1>Kuma<b>Doujin</b></h1></header><div class="empty">ยังไม่มีเรื่องที่ดาวน์โหลดไว้<br>ดาวน์โหลดตอนในแอปบนคอมก่อน แล้วกลับมาที่หน้านี้</div>';
+    return;
+  }
+  app.innerHTML = '<header><h1>Kuma<b>Doujin</b></h1><button onclick="load()">↻</button></header><div class="grid">' +
+    lib.map((w, i) => '<div class="card" onclick="location.hash=\'#/w/' + i + '\'">' +
+      '<img loading="lazy" src="/cover?' + q({ s: w.source, m: w.id }) + '" onerror="this.outerHTML=\'<div class=ph></div>\'">' +
+      '<div class="t">' + esc(w.title) + '</div><div class="s">' + w.chapters.length + ' ตอน</div></div>').join('') + '</div>';
+}
+
+function work(i) {
+  const w = lib[i]; if (!w) return home();
+  document.title = w.title;
+  app.innerHTML = '<header><button onclick="location.hash=\'\'">‹</button><h1>' + esc(w.title) + '</h1></header><div class="list">' +
+    w.chapters.map((c, ci) => '<div class="row' + (localStorage.getItem(readKey(w, c)) ? ' read' : '') +
+      '" onclick="location.hash=\'#/r/' + i + '/' + ci + '\'"><span>' + esc(c.label) + '</span><span class="s">' +
+      c.pages + ' หน้า</span></div>').join('') + '</div>';
+}
+
+function reader(i, ci) {
+  const w = lib[i], c = w && w.chapters[ci]; if (!c) return home();
+  document.title = c.label + ' · ' + w.title;
+  const imgs = Array.from({ length: c.pages }, (_, p) =>
+    '<img loading="lazy" data-p="' + p + '" src="/page?' + q({ s: w.source, m: w.id, c: c.id, i: p }) + '">').join('');
+  const prev = ci > 0 ? '<button onclick="location.hash=\'#/r/' + i + '/' + (ci - 1) + '\'">‹ ตอนก่อน</button>' : '';
+  const next = ci + 1 < w.chapters.length ? '<button class="accent" onclick="location.hash=\'#/r/' + i + '/' + (ci + 1) + '\'">ตอนถัดไป ›</button>' : '';
+  app.innerHTML = '<div id="reader"><header id="bar"><button onclick="location.hash=\'#/w/' + i + '\'">‹</button><h1>' +
+    esc(c.label) + '</h1></header>' + imgs + '<div class="next">' + prev + (next || '<button onclick="location.hash=\'#/w/' + i + '\'">จบแล้ว</button>') +
+    '</div><div id="count"></div></div>';
+  const bar = document.getElementById('bar'), count = document.getElementById('count');
+  const pages = Array.from(document.querySelectorAll('#reader img'));
+  const saved = +localStorage.getItem(posKey(w, c)) || 0;
+  if (saved > 0 && pages[saved]) setTimeout(() => pages[saved].scrollIntoView(), 50); else window.scrollTo(0, 0);
+  let lastY = 0;
+  const onScroll = () => {
+    const y = window.scrollY;
+    bar.classList.toggle('hidden', y > lastY && y > 80);
+    lastY = y;
+    const cur = pages.findIndex((im) => im.getBoundingClientRect().bottom > window.innerHeight * 0.4);
+    if (cur >= 0) {
+      count.textContent = (cur + 1) + ' / ' + c.pages;
+      localStorage.setItem(posKey(w, c), cur);
+      if (cur >= c.pages - 1) localStorage.setItem(readKey(w, c), '1');
+    }
+  };
+  window.onscroll = onScroll;
+  document.getElementById('reader').onclick = (e) => { if (e.target.tagName === 'IMG') bar.classList.toggle('hidden'); };
+  onScroll();
+}
+
+function route() {
+  window.onscroll = null;
+  const m = location.hash.match(/^#\/(w|r)\/(\d+)(?:\/(\d+))?/);
+  if (!m) return home();
+  if (m[1] === 'w') return work(+m[2]);
+  reader(+m[2], +m[3]);
+}
+window.onhashchange = route;
+load();
+</script>
+</body>
+</html>

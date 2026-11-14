@@ -33,6 +33,8 @@ const CHECK_UPDATES_KEY: &str = "updates.check_on_start";
 const SEARCH_HISTORY_KEY: &str = "search.history";
 /// Per-page filters (sort, language, source, tags, search text) as JSON keyed by page name.
 const BROWSE_PREFS_KEY: &str = "browse.prefs";
+const PHONE_ON_KEY: &str = "phone.enabled";
+const PHONE_KEY_KEY: &str = "phone.key";
 const SEARCH_HISTORY_MAX: usize = 12;
 /// Seconds for the fade between pages.
 const PAGE_FADE: f64 = 0.22;
@@ -185,6 +187,10 @@ pub struct KumaApp {
     fav_shelf: String,
     /// "Download all chapters" chosen on a card: runs once its details and chapters load.
     pending_download_all: Option<MangaKey>,
+    /// Read on your phone: the running server, its access key, and the last start error.
+    phone: Option<crate::phone::PhoneServer>,
+    phone_key: String,
+    phone_error: Option<String>,
 }
 
 fn cache_read<T: DeserializeOwned>(db: &Mutex<Database>, key: &str, ttl: Duration) -> Option<T> {
@@ -251,6 +257,12 @@ impl KumaApp {
             }
         }
         let check_updates = setting(CHECK_UPDATES_KEY).as_deref() != Some("false");
+        let phone_on = setting(PHONE_ON_KEY).as_deref() == Some("true");
+        let phone_key = setting(PHONE_KEY_KEY).filter(|k| k.len() >= 16).unwrap_or_else(|| {
+            let k = crate::phone::new_key();
+            let _ = db.set_setting(PHONE_KEY_KEY, &k);
+            k
+        });
         let search_history: Vec<String> = setting(SEARCH_HISTORY_KEY)
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
@@ -295,10 +307,16 @@ impl KumaApp {
             search_history,
             fav_shelf: String::new(),
             pending_download_all: None,
+            phone: None,
+            phone_key,
+            phone_error: None,
         })
         .map(|mut app| {
             if check_updates && !update::dev_build() {
                 app.check_update(false);
+            }
+            if phone_on {
+                app.set_phone(true);
             }
             app
         })
@@ -362,6 +380,78 @@ impl KumaApp {
             });
         });
         ui.add_space(10.0);
+    }
+
+    fn set_phone(&mut self, on: bool) {
+        self.phone = None; // stops a running server
+        self.phone_error = None;
+        if on {
+            match crate::phone::start(self.downloads.clone(), self.phone_key.clone()) {
+                Ok(s) => self.phone = Some(s),
+                Err(e) => self.phone_error = Some(format!("Could not start (port {}): {e}", crate::phone::PORT)),
+            }
+        }
+        self.save_setting(PHONE_ON_KEY, on.to_string());
+    }
+
+    /// Settings › Read on your phone.
+    fn phone_card(&mut self, ui: &mut egui::Ui) {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Read on your phone").strong().size(16.0));
+            ui.label(
+                RichText::new(
+                    "Read your downloaded chapters on a phone or tablet on the same Wi-Fi: turn this on and scan the code with the phone's camera. Nothing to install on the phone.",
+                )
+                .small()
+                .color(theme::MUTED),
+            );
+            let mut on = self.phone.is_some();
+            if ui.checkbox(&mut on, "Share my downloads with phones on this Wi-Fi").changed() {
+                self.set_phone(on);
+            }
+            if let Some(e) = &self.phone_error {
+                ui.colored_label(egui::Color32::from_rgb(0xE5, 0x6B, 0x6F), e);
+            }
+            let Some(url) = self.phone.as_ref().map(|s| s.url.clone()) else {
+                return;
+            };
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                views::qr_code(ui, &url, 190.0);
+                ui.add_space(14.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Scan with the phone camera, or open:").color(theme::MUTED));
+                    let link = ui.add(egui::Label::new(RichText::new(&url).monospace()).sense(egui::Sense::click()));
+                    browse::copy_menu(&link, &url);
+                    ui.horizontal(|ui| {
+                        if ui.button(theme::label(icons::COPY, "Copy link")).clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                        if ui
+                            .button(theme::label(icons::ARROW_CLOCKWISE, "New link"))
+                            .on_hover_text("Old links and QR codes stop working")
+                            .clicked()
+                        {
+                            self.phone_key = crate::phone::new_key();
+                            self.save_setting(PHONE_KEY_KEY, self.phone_key.clone());
+                            self.set_phone(true);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} titles, {} chapters shared. The phone must be on the same Wi-Fi. If Windows asks, allow KumaDoujin on private networks.",
+                            self.downloaded.len(),
+                            self.downloaded.iter().map(|e| e.chapters.len()).sum::<usize>()
+                        ))
+                        .small()
+                        .color(theme::MUTED),
+                    );
+                });
+            });
+        });
+        ui.add_space(12.0);
     }
 
     /// Settings › Diagnostics: log folder and a copyable report of every source's state.
@@ -1790,6 +1880,7 @@ impl KumaApp {
             }
             View::Settings => {
                 self.updates_card(ui);
+                self.phone_card(ui);
                 self.diagnostics_card(ui);
                 let mut adult = self.show_adult;
                 let s = views::settings(
