@@ -1,4 +1,4 @@
-﻿//! Cover grids (Discover / Popular / Latest / Search / Home rows) and the details page.
+//! Cover grids (Discover / Popular / Latest / Search / Home rows) and the details page.
 //! Views only mutate UI state and return what they want done; `app.rs` runs the work.
 
 use std::collections::HashMap;
