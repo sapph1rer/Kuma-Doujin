@@ -2,9 +2,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::sync::Mutex;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::anyhow;
-use kumadoujin::{app, core, database, sources};
+use kumadoujin::{app, core, database, sources, network};
 
 fn main() -> anyhow::Result<()> {
     let data_dir = core::config::data_dir();
@@ -29,7 +31,14 @@ fn run(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     let mut registry = sources::registry::SourceRegistry::default();
     registry.register(sources::adapters::mangadex::MangaDex::source()?)?;
     registry.register(sources::adapters::anilist::AniList::source()?)?;
-    registry.register(sources::adapters::miku_doujin::MikuDoujin::source()?)?;
+
+    // miku-doujin with HTTP client for reading support
+    let miku_http = Arc::new(network::client::HttpClient::new(
+        &["miku-doujin.com"],
+        &[("miku-doujin.com", Duration::from_millis(200))],
+    )?);
+    registry.register(sources::adapters::miku_doujin::MikuDoujin::source(miku_http)?)?;
+
     registry.register(sources::adapters::doujin_lc::DoujinLc::source()?)?;
     registry.register(sources::adapters::hentaithai::HentaiThai::source()?)?;
     registry.register(sources::adapters::dark_manga::DarkManga::source()?)?;
