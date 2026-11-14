@@ -48,8 +48,32 @@ impl CatalogProvider for MikuDoujin {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Miku Doujin Collection".into()),
+                japanese: Some("ミクドウジン".into()),
+                thai: Some("มิกุโดจิน".into()),
+                ..Default::default()
+            },
+            description: Some("Thai doujin and manga collection featuring Miku content".into()),
+            artists: vec!["Various Artists".into()],
+            circles: vec![],
+            parodies: vec!["Vocaloid".into()],
+            characters: vec!["Miku".into()],
+            tags: vec!["doujin".into(), "adult".into()],
+            language: Some("th".into()),
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://miku-doujin.com".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {

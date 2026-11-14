@@ -48,8 +48,31 @@ impl CatalogProvider for GoManga {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Go Manga".into()),
+                thai: Some("โก้มังงะ".into()),
+                ..Default::default()
+            },
+            description: Some("Manga from Go Manga platform".into()),
+            artists: vec!["Go Manga Artists".into()],
+            circles: vec![],
+            parodies: vec![],
+            characters: vec![],
+            tags: vec!["manga".into()],
+            language: None,
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://go-manga.net".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {

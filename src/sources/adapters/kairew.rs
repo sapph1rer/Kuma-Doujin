@@ -48,8 +48,31 @@ impl CatalogProvider for Kairew {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Kairew Manga".into()),
+                thai: Some("ไกรเรว์มังงะ".into()),
+                ..Default::default()
+            },
+            description: Some("Manga from Kairew platform".into()),
+            artists: vec!["Kairew Artists".into()],
+            circles: vec![],
+            parodies: vec![],
+            characters: vec![],
+            tags: vec!["manga".into()],
+            language: None,
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://kairew.com".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {

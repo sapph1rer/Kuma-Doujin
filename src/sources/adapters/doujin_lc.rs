@@ -48,8 +48,31 @@ impl CatalogProvider for DoujinLc {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Doujin LC Story".into()),
+                thai: Some("ดูจินแอลซี".into()),
+                ..Default::default()
+            },
+            description: Some("Thai doujin collection from Doujin LC platform".into()),
+            artists: vec!["Artists".into()],
+            circles: vec![],
+            parodies: vec![],
+            characters: vec![],
+            tags: vec!["doujin".into(), "thai".into()],
+            language: Some("th".into()),
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://doujin-lc.net".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {

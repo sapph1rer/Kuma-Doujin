@@ -48,8 +48,31 @@ impl CatalogProvider for UpManga {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Up Manga".into()),
+                thai: Some("อัพมังงะ".into()),
+                ..Default::default()
+            },
+            description: Some("Manga from Up Manga platform".into()),
+            artists: vec!["Up Manga Artists".into()],
+            circles: vec![],
+            parodies: vec![],
+            characters: vec![],
+            tags: vec!["manga".into()],
+            language: None,
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://up-manga.com".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {

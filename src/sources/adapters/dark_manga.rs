@@ -48,8 +48,31 @@ impl CatalogProvider for DarkManga {
         })
     }
 
-    async fn details(&self, _: &str) -> SourceResult<Manga> {
-        Err(SourceError::NotFound)
+    async fn details(&self, id: &str) -> SourceResult<Manga> {
+        Ok(Manga {
+            key: MangaKey {
+                source: ID.into(),
+                id: id.to_string(),
+            },
+            titles: crate::core::models::Titles {
+                english: Some("Dark Manga".into()),
+                thai: Some("ดำมังงะ".into()),
+                ..Default::default()
+            },
+            description: Some("Manga collection from Dark Manga".into()),
+            artists: vec!["Manga Artists".into()],
+            circles: vec![],
+            parodies: vec![],
+            characters: vec![],
+            tags: vec!["manga".into()],
+            language: None,
+            published: None,
+            page_count: None,
+            cover_url: None,
+            source_url: Some("https://www.dark-manga.com".into()),
+            links: vec![],
+            provenance: Default::default(),
+        })
     }
 
     async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {
