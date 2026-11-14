@@ -111,6 +111,8 @@ KUMA_BROWSER_EXE=target/debug/kuma-browser.exe cargo test --test live_gated -- -
 
 ทุกวัน GitHub Actions ([live-sources.yml](.github/workflows/live-sources.yml)) จะทดสอบทุกแหล่งกับเว็บจริง ถ้าแหล่งไหนพังจะเปิด issue ให้อัตโนมัติ
 
+ตรวจบนเครื่องตัวเองแทนได้ (ใช้ IP ไทย เว็บไทยจึงบล็อกน้อยกว่า): `scripts\live-check.ps1` รันครั้งเดียว หรือใส่ `-Install` เพื่อตั้งให้รันทุกวัน 08:00 ผ่าน Task Scheduler (`-Uninstall` เพื่อเอาออก) ล็อกอยู่ที่ `%LOCALAPPDATA%\KumaDoujin\live-check` ถ้ามีแหล่งพังจะเด้งแจ้งเตือนบน Windows และเปิด issue บน GitHub
+
 ## ข้อควรรู้
 
 - เนื้อหาทั้งหมดมาจากเว็บต้นทาง แอปไม่ได้เก็บหรือเผยแพร่เนื้อหาเอง และทุกหน้ามีลิงก์กลับไปที่เว็บต้นทาง

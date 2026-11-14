@@ -25,14 +25,14 @@ jobs:
         id: plain
         continue-on-error: true
         shell: bash
-        run: cargo test --test live_mangastream -- --ignored --nocapture 2>&1 | tee plain.log; exit ${PIPESTATUS[0]}
+        run: cargo test --test live_mangastream -- --ignored 2>&1 | tee plain.log; exit ${PIPESTATUS[0]}
       - name: Browser-check sources
         id: gated
         continue-on-error: true
         shell: bash
         env:
           KUMA_BROWSER_EXE: ${{ github.workspace }}\target\debug\kuma-browser.exe
-        run: cargo test --test live_gated -- --ignored --nocapture --test-threads=1 2>&1 | tee gated.log; exit ${PIPESTATUS[0]}
+        run: cargo test --test live_gated -- --ignored --test-threads=1 2>&1 | tee gated.log; exit ${PIPESTATUS[0]}
       - name: Report broken sources
         if: steps.plain.outcome == 'failure' || steps.gated.outcome == 'failure'
         shell: bash
