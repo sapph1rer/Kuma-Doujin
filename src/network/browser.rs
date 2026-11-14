@@ -143,6 +143,7 @@ impl Drop for BrowserProcess {
             && let Some(p) = g.as_mut()
         {
             let _ = writeln!(p.stdin, "{}", json!({"op": "quit"}));
+            let _ = p.child.kill(); // don't leave it running if it is stuck on a page
         }
     }
 }

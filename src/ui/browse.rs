@@ -467,7 +467,24 @@ pub fn browse(
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} Recent:", icons::CLOCK_COUNTER_CLOCKWISE)).color(theme::MUTED));
             for h in history {
-                let chip = ui.add(egui::Button::new(RichText::new(h).small()).corner_radius(12));
+                let (chip, remove) = egui::Frame::new()
+                    .fill(theme::SURFACE)
+                    .corner_radius(12)
+                    .inner_margin(egui::Margin { left: 10, right: 4, top: 2, bottom: 2 })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let word = ui
+                            .add(Label::new(RichText::new(h).small()).sense(Sense::click()))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let x = ui
+                            .add(egui::Button::new(RichText::new("×").small().color(theme::MUTED)).frame(false))
+                            .on_hover_text("Remove from history");
+                        (word, x)
+                    })
+                    .inner;
+                if remove.clicked() {
+                    actions.remove_search_history = Some(h.clone());
+                }
                 let mut search = chip.clicked();
                 chip.context_menu(|ui| {
                     if ui.button(theme::label(icons::MAGNIFYING_GLASS, "Search this")).clicked() {
@@ -486,13 +503,6 @@ pub fn browse(
                 if search {
                     st.query.text = h.clone();
                     reload = true;
-                }
-                if ui
-                    .add(egui::Button::new(RichText::new("×").small().color(theme::MUTED)).frame(false))
-                    .on_hover_text("Remove from history")
-                    .clicked()
-                {
-                    actions.remove_search_history = Some(h.clone());
                 }
             }
             if ui.small_button("Clear all").clicked() {
@@ -678,7 +688,8 @@ pub fn details(
         cover(ui, covers, &m.key.source, m.cover_url.as_deref(), rect, 12);
         ui.add_space(20.0);
         ui.vertical(|ui| {
-            ui.heading(RichText::new(m.titles.display()).size(26.0).strong());
+            let h = ui.add(Label::new(RichText::new(m.titles.display()).size(26.0).strong()).sense(Sense::click()));
+            copy_menu(&h, m.titles.display());
             let others: Vec<&str> = [&m.titles.japanese, &m.titles.thai, &m.titles.english]
                 .into_iter()
                 .flatten()
@@ -686,7 +697,8 @@ pub fn details(
                 .filter(|t| *t != m.titles.display())
                 .collect();
             if !others.is_empty() {
-                ui.label(RichText::new(others.join(" · ")).color(theme::MUTED));
+                let r = ui.add(Label::new(RichText::new(others.join(" · ")).color(theme::MUTED)).sense(Sense::click()));
+                copy_menu(&r, &others.join(" · "));
             }
             ui.add_space(10.0);
             // Hover a value to see which source(s) supplied it.
@@ -703,7 +715,8 @@ pub fn details(
                 if !values.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(format!("{name}:")).color(theme::MUTED));
-                        let r = ui.label(values.join(", "));
+                        let r = ui.add(Label::new(values.join(", ")).sense(Sense::click()));
+                        copy_menu(&r, &values.join(", "));
                         if let Some(src) = from(key) {
                             r.on_hover_text(src);
                         }
@@ -725,12 +738,13 @@ pub fn details(
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     for t in &m.tags {
-                        ui.add(
+                        let chip = ui.add(
                             egui::Button::new(RichText::new(t).small())
                                 .fill(theme::SURFACE)
                                 .corner_radius(12)
-                                .sense(Sense::hover()),
+                                .sense(Sense::click()),
                         );
+                        copy_menu(&chip, t);
                     }
                 });
             }
@@ -846,7 +860,8 @@ pub fn details(
         ui.add_space(16.0);
         theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(desc);
+            let r = ui.add(Label::new(desc).sense(Sense::click()));
+            copy_menu(&r, desc);
         });
     }
     if source.is_some_and(|s| s.can_read()) {
@@ -886,7 +901,11 @@ fn alternatives(ui: &mut egui::Ui, st: &DetailsState, action: &mut DetailsAction
         for a in list {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&a.source).strong());
-                ui.add(egui::Label::new(RichText::new(&a.title).color(theme::MUTED)).truncate());
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 360.0).max(80.0));
+                    let r = ui.add(egui::Label::new(RichText::new(&a.title).color(theme::MUTED)).truncate().sense(Sense::click()));
+                    copy_menu(&r, &a.title);
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button(theme::label(icons::BOOK_OPEN, "Open")).clicked() {
                         action.open_other = Some(a.key.clone());
@@ -1037,6 +1056,9 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                         Some(DlStatus::Queued) => {
                             ui.label(RichText::new("Queued").color(theme::MUTED));
                         }
+                        Some(DlStatus::Running { total: 0, .. }) => {
+                            ui.label(RichText::new("Starting…").color(theme::MUTED));
+                        }
                         Some(DlStatus::Running { done, total }) => {
                             let frac = if *total == 0 { 0.0 } else { *done as f32 / *total as f32 };
                             ui.add(
@@ -1130,4 +1152,47 @@ pub(crate) fn text_menu(resp: &egui::Response, text: &mut String) -> bool {
         }
     });
     changed
+}
+
+/// Right-click "Copy" for a piece of text on the page.
+pub(crate) fn copy_menu(resp: &egui::Response, text: &str) {
+    resp.context_menu(|ui| {
+        if ui.button(theme::label(icons::COPY, "Copy")).clicked() {
+            ui.ctx().copy_text(text.to_string());
+            ui.close();
+        }
+    });
+}
+
+/// Filters a browse page remembers between runs.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BrowsePrefs {
+    pub sort: Option<SortOrder>,
+    pub languages: Vec<String>,
+    pub source: Option<String>,
+    pub include_tags: Vec<String>,
+    pub text: String,
+}
+
+impl BrowseState {
+    pub fn prefs(&self) -> BrowsePrefs {
+        BrowsePrefs {
+            sort: Some(self.query.sort),
+            languages: self.query.languages.clone(),
+            source: self.source.clone(),
+            include_tags: self.query.include_tags.clone(),
+            text: self.query.text.clone(),
+        }
+    }
+
+    pub fn apply(&mut self, p: BrowsePrefs) {
+        if let Some(sort) = p.sort {
+            self.query.sort = sort;
+        }
+        self.query.languages = p.languages;
+        self.source = p.source;
+        self.query.include_tags = p.include_tags;
+        self.query.text = p.text;
+    }
 }

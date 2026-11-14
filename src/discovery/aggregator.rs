@@ -25,7 +25,7 @@ pub struct Aggregated {
 }
 
 /// A source that has not answered by then is reported as an error; the others still show.
-const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Queries every catalog at once. `on_partial` gets the merged results so far each time a source
 /// answers (fast sources show before slow ones); the return value is the complete result.

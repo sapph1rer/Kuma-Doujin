@@ -30,6 +30,9 @@ pub struct HttpClient {
     browser: Option<Arc<BrowserProcess>>,
     /// hosts that already needed the helper browser; later requests skip the doomed direct attempt
     browser_hosts: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// (Cookie, User-Agent) the helper browser earned per host. Plain requests carrying them pass the
+    /// browser check, in parallel and much faster than loading every page in the (serial) browser.
+    browser_auth: std::sync::Mutex<std::collections::HashMap<String, ((String, String), std::time::Instant)>>,
 }
 
 /// SSRF guard: only `https` URLs whose host equals an allowed host or is a subdomain of it.
@@ -67,6 +70,7 @@ impl HttpClient {
             retry: RetryPolicy::default(),
             browser: None,
             browser_hosts: Default::default(),
+            browser_auth: Default::default(),
         })
     }
 
@@ -106,6 +110,16 @@ impl HttpClient {
         let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
         // a page that renders client-side needs the browser even when plain HTTP is allowed
         let host = url.host_str().unwrap_or_default().to_string();
+        // fast path: the browser's cookies (not for client-rendered pages, which need scripts run)
+        if wait.is_none()
+            && let Some(auth) = self.cached_auth(&host)
+        {
+            match self.get(&url, max_bytes, Some("text/"), None, Some(&auth)).await {
+                Ok((body, _)) if !is_challenge(&body) => return Ok(String::from_utf8_lossy(&body).into_owned()),
+                // clearance expired or refused: earn a new one through the browser below
+                _ => self.forget_auth(&host),
+            }
+        }
         let known = self.browser_hosts.lock().is_ok_and(|h| h.contains(&host));
         let plain = if (wait.is_some() || known) && self.browser.is_some() {
             Err(SourceError::AccessDenied)
@@ -122,7 +136,7 @@ impl HttpClient {
             {
                 self.check(&url)?;
                 if let Ok(mut h) = self.browser_hosts.lock() {
-                    h.insert(host);
+                    h.insert(host.clone());
                 }
                 let browser = self.browser.clone().expect("checked");
                 let u = url.to_string();
@@ -132,6 +146,9 @@ impl HttpClient {
                     .map_err(|e| SourceError::Network(format!("{e:#}")))?;
                 if html.len() > max_bytes {
                     return Err(SourceError::InvalidResponse("response too large".into()));
+                }
+                if self.cached_auth(&host).is_none() {
+                    let _ = self.browser_cookies(&url).await; // best effort: next pages go the fast way
                 }
                 Ok(html)
             }
@@ -151,18 +168,44 @@ impl HttpClient {
         max_bytes: usize,
     ) -> SourceResult<(Vec<u8>, header::HeaderMap)> {
         let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        match self.get(&url, max_bytes, Some("image/"), None, None).await {
+        let host = url.host_str().unwrap_or_default().to_string();
+        let cached = self.cached_auth(&host);
+        match self.get(&url, max_bytes, Some("image/"), None, cached.as_ref()).await {
             Err(SourceError::AccessDenied) if self.browser.is_some() => {
-                let browser = self.browser.clone().expect("checked");
-                let u = url.to_string();
-                let auth = tokio::task::spawn_blocking(move || browser.cookies(&u))
-                    .await
-                    .map_err(|e| SourceError::Network(e.to_string()))?
-                    .map_err(|e| SourceError::Network(format!("{e:#}")))?;
+                self.forget_auth(&host);
+                let auth = self.browser_cookies(&url).await?;
                 self.get(&url, max_bytes, Some("image/"), None, Some(&auth)).await
             }
             r => r,
         }
+    }
+
+    const AUTH_TTL: Duration = Duration::from_secs(20 * 60);
+
+    fn cached_auth(&self, host: &str) -> Option<(String, String)> {
+        let map = self.browser_auth.lock().ok()?;
+        let (auth, at) = map.get(host)?;
+        (at.elapsed() < Self::AUTH_TTL && !auth.0.is_empty()).then(|| auth.clone())
+    }
+
+    fn forget_auth(&self, host: &str) {
+        if let Ok(mut map) = self.browser_auth.lock() {
+            map.remove(host);
+        }
+    }
+
+    /// Asks the helper browser for its cookies on `url`'s host and remembers them.
+    async fn browser_cookies(&self, url: &Url) -> SourceResult<(String, String)> {
+        let browser = self.browser.clone().ok_or(SourceError::AccessDenied)?;
+        let u = url.to_string();
+        let auth = tokio::task::spawn_blocking(move || browser.cookies(&u))
+            .await
+            .map_err(|e| SourceError::Network(e.to_string()))?
+            .map_err(|e| SourceError::Network(format!("{e:#}")))?;
+        if let (Some(host), Ok(mut map)) = (url.host_str(), self.browser_auth.lock()) {
+            map.insert(host.to_string(), (auth.clone(), std::time::Instant::now()));
+        }
+        Ok(auth)
     }
 
     /// POSTs a JSON body once (no retries); used for fire-and-forget telemetry the source requires.

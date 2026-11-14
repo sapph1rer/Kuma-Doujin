@@ -31,6 +31,8 @@ const CHAPTER_LANG_KEY: &str = "reader.chapter_lang";
 const CATEGORY_KEY: &str = "content.category";
 const CHECK_UPDATES_KEY: &str = "updates.check_on_start";
 const SEARCH_HISTORY_KEY: &str = "search.history";
+/// Per-page filters (sort, language, source, tags, search text) as JSON keyed by page name.
+const BROWSE_PREFS_KEY: &str = "browse.prefs";
 const SEARCH_HISTORY_MAX: usize = 12;
 /// Seconds for the fade between pages.
 const PAGE_FADE: f64 = 0.22;
@@ -233,7 +235,21 @@ impl KumaApp {
         ]
         .into_iter()
         .map(|(v, sort)| (v, BrowseState::new(sort)))
-        .collect();
+        .collect::<HashMap<View, BrowseState>>();
+        let mut browse = browse;
+        let prefs: HashMap<String, browse::BrowsePrefs> = setting(BROWSE_PREFS_KEY)
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        for (v, st) in browse.iter_mut() {
+            if let Some(p) = prefs.get(v.label()).cloned() {
+                st.apply(p);
+                // a remembered source that is gone or switched off would show an empty page
+                if st.source.as_deref().is_some_and(|s| !registry.is_enabled(s)) {
+                    st.source = None;
+                    st.query.include_tags.clear();
+                }
+            }
+        }
         let check_updates = setting(CHECK_UPDATES_KEY).as_deref() != Some("false");
         let search_history: Vec<String> = setting(SEARCH_HISTORY_KEY)
             .and_then(|j| serde_json::from_str(&j).ok())
@@ -666,6 +682,11 @@ impl KumaApp {
         st.result = None; // results of the previous query must not show as partial ones
         let generation = st.generation;
         let mut query = st.query.clone();
+        let prefs: HashMap<&str, browse::BrowsePrefs> =
+            self.browse.iter().map(|(v, s)| (v.label(), s.prefs())).collect();
+        if let Ok(json) = serde_json::to_string(&prefs) {
+            self.save_setting(BROWSE_PREFS_KEY, json);
+        }
         let text = query.text.trim().to_string();
         if view == View::Search && !text.is_empty() {
             self.search_history.retain(|h| !h.eq_ignore_ascii_case(&text));
@@ -1112,6 +1133,7 @@ impl KumaApp {
         }
         let (manga, all) = (manga.clone(), chapters.clone());
         let (store, status) = (self.downloads.clone(), self.dl_status.clone());
+        let notify = self.worker.notifier();
         self.worker.spawn(async move {
             let cover_file = store.cover_path(&manga.key);
             if let (Some(url), Some(catalog)) = (&manga.cover_url, catalog)
@@ -1139,6 +1161,8 @@ impl KumaApp {
                         if let Ok(mut m) = status.lock() {
                             m.remove(&key);
                         }
+                        // mark it "Offline" now, not when the whole queue is done
+                        notify(Msg::Downloads(store.list()));
                     }
                     Err(e) => set(DlStatus::Failed(e)),
                 }
