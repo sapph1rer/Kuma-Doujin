@@ -39,27 +39,45 @@ async fn walk(s: Source, search_word: &str) {
     println!("  search '{}': {} items", sq.text, cat.search(&sq).await.unwrap().items.len());
 }
 
-#[tokio::test]
-#[ignore]
-async fn live() {
+fn http() -> Arc<HttpClient> {
     let browser = Arc::new(BrowserProcess::beside_current_exe().expect("KUMA_BROWSER_EXE"));
-    let http = Arc::new(
+    Arc::new(
         HttpClient::new(&["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "kairew.com"], &[])
             .unwrap()
             .with_browser(Some(browser)),
-    );
-    walk(HentaiThai::source(http.clone()).unwrap(), "sekitsui").await;
-    walk(DoujinLc::source(http.clone()).unwrap(), "wife").await;
-    walk(MikuDoujin::source(http.clone()).unwrap(), "Zen").await;
+    )
+}
 
-    let k = Kairew::source(http).unwrap().catalog.unwrap();
+// One test per source, so a failure names the site that broke. The helper browser handles one page at
+// a time, so run these with `--test-threads=1`.
+
+#[tokio::test]
+#[ignore]
+async fn hentaithai() {
+    walk(HentaiThai::source(http()).unwrap(), "sekitsui").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn doujin_lc() {
+    walk(DoujinLc::source(http()).unwrap(), "wife").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn miku_doujin() {
+    walk(MikuDoujin::source(http()).unwrap(), "Zen").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn kairew() {
+    let k = Kairew::source(http()).unwrap().catalog.unwrap();
     let list = k.search(&SearchQuery { page: 1, ..Default::default() }).await.unwrap();
     println!("[Kairew] {} items", list.items.len());
     assert!(list.items.len() > 10);
     let f = &list.items[0];
     println!("  first: {} cover bytes: {}", f.titles.display(), k.cover(f.cover_url.as_ref().unwrap()).await.unwrap().len());
     let m = k.details(&f.key.id).await.unwrap();
-    println!("  details: {} desc_len={} cover={:?} url={:?}", m.titles.display(), m.description.as_deref().map_or(0, str::len), m.cover_url, m.source_url);
-    let word = f.titles.display().chars().take(3).collect::<String>();
-    println!("  filter '{word}': {}", k.search(&SearchQuery { page: 1, text: word.clone(), ..Default::default() }).await.unwrap().items.len());
+    println!("  details: {} desc_len={}", m.titles.display(), m.description.as_deref().map_or(0, str::len));
 }

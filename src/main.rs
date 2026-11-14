@@ -18,6 +18,7 @@ fn main() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
+    kumadoujin::update::clean_old();
     let result = run(data_dir);
     if let Err(e) = &result {
         tracing::error!(error = %e, "fatal error");

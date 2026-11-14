@@ -6,7 +6,7 @@ use super::browse::{Covers, card, cover};
 use super::views::{empty_state, heading};
 use super::{icons, theme};
 use crate::core::models::MangaKey;
-use crate::database::library::{Bookmark, Favorite, Progress, ResumePoint};
+use crate::database::library::{Bookmark, Favorite, Progress, ResumePoint, SHELVES};
 
 /// What the user asked for on a library page.
 #[derive(Default)]
@@ -16,6 +16,39 @@ pub struct LibraryAction {
     pub remove_progress: Option<MangaKey>,
     pub clear_history: bool,
     pub delete_bookmark: Option<i64>,
+    pub clear_viewed: bool,
+}
+
+/// Home row of recently opened titles (`added_at` = view time, unix ms).
+pub fn viewed_row(
+    ui: &mut egui::Ui,
+    viewed: &[Favorite],
+    covers: &mut Covers,
+    now_ms: i64,
+    action: &mut LibraryAction,
+) {
+    if viewed.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Recently viewed").strong().size(18.0));
+        if ui.small_button("Clear").clicked() {
+            action.clear_viewed = true;
+        }
+    });
+    ui.add_space(6.0);
+    egui::ScrollArea::horizontal().id_salt("viewed").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            for f in viewed.iter().take(16) {
+                let sub = ago(now_ms, f.added_at);
+                if card(ui, covers, &f.key.source, f.cover_url.as_deref(), &f.title, &sub) {
+                    action.open = Some(f.key.clone());
+                }
+            }
+        });
+    });
+    ui.add_space(20.0);
 }
 
 /// Human-friendly age of a timestamp, both in unix milliseconds.
@@ -174,13 +207,25 @@ pub fn bookmarks(
     marks: &[Bookmark],
     covers: &mut Covers,
     now_ms: i64,
+    // shown shelf id ("" = all)
+    shelf: &mut String,
 ) -> LibraryAction {
     let mut action = LibraryAction::default();
     heading(ui, "Bookmarks", "Favorite titles and saved pages");
 
-    ui.label(RichText::new("Favorites").strong().size(18.0));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Favorites").strong().size(18.0));
+        ui.add_space(8.0);
+        let count = |id: &str| favorites.iter().filter(|f| id.is_empty() || f.shelf == id).count();
+        for (id, name) in std::iter::once(("", "All")).chain(SHELVES) {
+            if theme::pill(ui, &format!("{name} ({})", count(id)), shelf == id).clicked() {
+                *shelf = id.to_string();
+            }
+        }
+    });
     ui.add_space(6.0);
-    if favorites.is_empty() {
+    let shown: Vec<&Favorite> = favorites.iter().filter(|f| shelf.is_empty() || f.shelf == *shelf).collect();
+    if shown.is_empty() {
         empty_state(
             ui,
             "No favorites",
@@ -192,8 +237,9 @@ pub fn bookmarks(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    for f in favorites {
-                        let sub = format!("Added {}", ago(now_ms, f.added_at * 1000));
+                    for f in shown {
+                        let shelf_name = SHELVES.iter().find(|s| s.0 == f.shelf).map_or("", |s| s.1);
+                        let sub = format!("{shelf_name} · added {}", ago(now_ms, f.added_at * 1000));
                         if card(
                             ui,
                             covers,

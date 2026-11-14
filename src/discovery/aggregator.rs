@@ -95,7 +95,7 @@ fn merge(
     out
 }
 
-fn words(s: &str) -> Vec<String> {
+pub fn words(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -104,7 +104,7 @@ fn words(s: &str) -> Vec<String> {
 }
 
 /// Higher is better: exact title, then prefix, then every word present, then some words.
-fn relevance(query: &[String], m: &MangaSummary) -> u32 {
+pub fn relevance(query: &[String], m: &MangaSummary) -> u32 {
     let t = &m.titles;
     [&t.english, &t.japanese, &t.thai]
         .into_iter()

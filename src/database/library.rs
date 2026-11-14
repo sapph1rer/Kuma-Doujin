@@ -50,7 +50,19 @@ pub struct Favorite {
     pub title: String,
     pub cover_url: Option<String>,
     pub added_at: i64,
+    /// One of [`SHELVES`] (stored id).
+    pub shelf: String,
 }
+
+/// Favorite shelves: (stored id, label).
+pub const SHELVES: [(&str, &str); 3] = [
+    ("reading", "Reading"),
+    ("completed", "Completed"),
+    ("plan", "Plan to read"),
+];
+
+/// Recently opened titles kept for the Home row.
+const RECENT_KEEP: i64 = 30;
 
 const PROGRESS_COLS: &str = "source_id, manga_id, chapter_id, chapter_lang, page_index, \
     chapter_label, page_count, title, cover_url, updated_at";
@@ -193,16 +205,17 @@ impl Database {
     pub fn set_favorite(&self, fav: &Favorite, on: bool) -> rusqlite::Result<()> {
         if on {
             self.conn.execute(
-                "INSERT INTO favorites (source_id, manga_id, title, cover_url, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO favorites (source_id, manga_id, title, cover_url, added_at, shelf)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(source_id, manga_id) DO UPDATE SET
-                    title = excluded.title, cover_url = excluded.cover_url",
+                    title = excluded.title, cover_url = excluded.cover_url, shelf = excluded.shelf",
                 params![
                     fav.key.source,
                     fav.key.id,
                     fav.title,
                     fav.cover_url,
-                    now_secs()
+                    now_secs(),
+                    fav.shelf
                 ],
             )?;
         } else {
@@ -216,7 +229,7 @@ impl Database {
 
     pub fn favorites(&self) -> rusqlite::Result<Vec<Favorite>> {
         let mut stmt = self.conn.prepare(
-            "SELECT source_id, manga_id, title, cover_url, added_at
+            "SELECT source_id, manga_id, title, cover_url, added_at, shelf
              FROM favorites ORDER BY added_at DESC, rowid DESC",
         )?;
         stmt.query_map([], |r| {
@@ -228,9 +241,77 @@ impl Database {
                 title: r.get(2)?,
                 cover_url: r.get(3)?,
                 added_at: r.get(4)?,
+                shelf: r.get(5)?,
             })
         })?
         .collect()
+    }
+
+    /// Marks chapters of a work read or unread.
+    pub fn set_chapters_read(&self, key: &MangaKey, chapter_ids: &[String], read: bool) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in chapter_ids {
+            if read {
+                tx.execute(
+                    "INSERT OR IGNORE INTO read_chapters (source_id, manga_id, chapter_id, read_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![key.source, key.id, id, now_secs()],
+                )?;
+            } else {
+                tx.execute(
+                    "DELETE FROM read_chapters WHERE source_id = ?1 AND manga_id = ?2 AND chapter_id = ?3",
+                    params![key.source, key.id, id],
+                )?;
+            }
+        }
+        tx.commit()
+    }
+
+    pub fn read_chapters(&self, key: &MangaKey) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT chapter_id FROM read_chapters WHERE source_id = ?1 AND manga_id = ?2")?;
+        stmt.query_map(params![key.source, key.id], |r| r.get(0))?.collect()
+    }
+
+    /// Moves a work to the front of "recently viewed", keeping the newest [`RECENT_KEEP`].
+    pub fn touch_viewed(&self, f: &Favorite) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO recently_viewed (source_id, manga_id, title, cover_url, viewed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(source_id, manga_id) DO UPDATE SET
+                title = excluded.title, cover_url = excluded.cover_url, viewed_at = excluded.viewed_at",
+            params![f.key.source, f.key.id, f.title, f.cover_url, now_millis()],
+        )?;
+        self.conn.execute(
+            "DELETE FROM recently_viewed WHERE rowid NOT IN
+                (SELECT rowid FROM recently_viewed ORDER BY viewed_at DESC, rowid DESC LIMIT ?1)",
+            [RECENT_KEEP],
+        )?;
+        Ok(())
+    }
+
+    /// Newest first; `added_at` holds the view time (unix ms).
+    pub fn recently_viewed(&self, limit: usize) -> rusqlite::Result<Vec<Favorite>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_id, manga_id, title, cover_url, viewed_at
+             FROM recently_viewed ORDER BY viewed_at DESC, rowid DESC LIMIT ?1",
+        )?;
+        stmt.query_map([limit as i64], |r| {
+            Ok(Favorite {
+                key: MangaKey { source: r.get(0)?, id: r.get(1)? },
+                title: r.get(2)?,
+                cover_url: r.get(3)?,
+                added_at: r.get(4)?,
+                shelf: String::new(),
+            })
+        })?
+        .collect()
+    }
+
+    pub fn clear_recently_viewed(&self) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM recently_viewed", [])?;
+        Ok(())
     }
 }
 
@@ -307,6 +388,7 @@ mod tests {
     fn favorites_toggle() {
         let db = Database::open_in_memory().unwrap();
         let f = Favorite {
+            shelf: "reading".into(),
             key: point("a", 0).key,
             title: "A".into(),
             cover_url: None,
@@ -317,5 +399,27 @@ mod tests {
         assert_eq!(db.favorites().unwrap().len(), 1);
         db.set_favorite(&f, false).unwrap();
         assert!(db.favorites().unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_marks_and_recently_viewed() {
+        let db = Database::open_in_memory().unwrap();
+        let key = MangaKey { source: "s".into(), id: "m".into() };
+        db.set_chapters_read(&key, &["1".into(), "2".into()], true).unwrap();
+        db.set_chapters_read(&key, &["1".into()], false).unwrap();
+        assert_eq!(db.read_chapters(&key).unwrap(), ["2".to_string()].into_iter().collect());
+        for i in 0..35 {
+            let f = Favorite {
+                key: MangaKey { source: "s".into(), id: i.to_string() },
+                title: format!("t{i}"),
+                cover_url: None,
+                added_at: 0,
+                shelf: String::new(),
+            };
+            db.touch_viewed(&f).unwrap();
+        }
+        let recent = db.recently_viewed(100).unwrap();
+        assert_eq!(recent.len(), RECENT_KEEP as usize);
+        assert_eq!(recent[0].key.id, "34");
     }
 }

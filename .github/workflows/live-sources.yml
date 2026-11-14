@@ -1,0 +1,53 @@
+# Daily check that every source still works against the real site. A failing run opens (or
+# comments on) an issue naming the sources that broke; GitHub also emails the repo owner.
+name: Live sources
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # 08:00 Thailand time
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the helper browser
+        run: cargo build --bin kuma-browser
+      - name: MangaStream sources
+        id: plain
+        continue-on-error: true
+        shell: bash
+        run: cargo test --test live_mangastream -- --ignored --nocapture 2>&1 | tee plain.log; exit ${PIPESTATUS[0]}
+      - name: Browser-check sources
+        id: gated
+        continue-on-error: true
+        shell: bash
+        env:
+          KUMA_BROWSER_EXE: ${{ github.workspace }}\target\debug\kuma-browser.exe
+        run: cargo test --test live_gated -- --ignored --nocapture --test-threads=1 2>&1 | tee gated.log; exit ${PIPESTATUS[0]}
+      - name: Report broken sources
+        if: steps.plain.outcome == 'failure' || steps.gated.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          failed=$(grep -hE '^test .* FAILED$' plain.log gated.log | sed -E 's/^test ([a-z_]+) .*/\1/' | sort -u | tr '\n' ' ')
+          body="Daily live check failed for: **${failed:-unknown}**
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --state open --label live-check --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh label create live-check --color B60205 --description "Daily live source check" 2>/dev/null || true
+            gh issue create --title "Live source check failed: ${failed:-unknown}" --label live-check --body "$body"
+          fi
+          exit 1

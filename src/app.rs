@@ -17,10 +17,11 @@ use crate::reader::engine::{self, ReaderSettings};
 use crate::reader::image_decoder;
 use crate::sources::health::HealthBook;
 use crate::sources::registry::SourceRegistry;
-use crate::ui::browse::{self, Actions, BrowseState, Covers, DetailsState, DlInfo, TagsSlot};
+use crate::ui::browse::{self, Actions, Alt, BrowseState, Covers, DetailsState, DlInfo, TagsSlot};
 use crate::ui::library::{self, LibraryAction};
 use crate::ui::reader::{self, PageSlot, ReaderState};
 use crate::ui::{View, icons, theme, views};
+use crate::update::{self, Release};
 use crate::worker::Worker;
 
 const SHOW_ADULT_KEY: &str = "content.show_adult";
@@ -28,6 +29,9 @@ const AGE_CONFIRMED_KEY: &str = "content.age_confirmed";
 const READER_SETTINGS_KEY: &str = "reader.settings";
 const CHAPTER_LANG_KEY: &str = "reader.chapter_lang";
 const CATEGORY_KEY: &str = "content.category";
+const CHECK_UPDATES_KEY: &str = "updates.check_on_start";
+const SEARCH_HISTORY_KEY: &str = "search.history";
+const SEARCH_HISTORY_MAX: usize = 12;
 /// Seconds for the fade between pages.
 const PAGE_FADE: f64 = 0.22;
 const PAGE_CACHE_MB_KEY: &str = "cache.pages_mb";
@@ -48,6 +52,8 @@ pub struct Library {
     pub recent: Vec<Progress>,
     pub bookmarks: Vec<Bookmark>,
     pub favorites: Vec<Favorite>,
+    /// Recently opened details pages (`added_at` = view time, unix ms).
+    pub viewed: Vec<Favorite>,
 }
 
 fn load_library(db: &Database) -> Library {
@@ -59,6 +65,7 @@ fn load_library(db: &Database) -> Library {
             .unwrap_or_default(),
         bookmarks: db.bookmarks().inspect_err(log).unwrap_or_default(),
         favorites: db.favorites().inspect_err(log).unwrap_or_default(),
+        viewed: db.recently_viewed(20).inspect_err(log).unwrap_or_default(),
     }
 }
 
@@ -101,6 +108,35 @@ pub enum Msg {
     },
     /// The offline library changed (download finished or deleted).
     Downloads(Vec<Entry>),
+    Update {
+        manual: bool,
+        result: Result<Release, String>,
+    },
+    Installed(Result<PathBuf, String>),
+    ReadMarks {
+        key: MangaKey,
+        read: std::collections::HashSet<String>,
+    },
+    Alternatives {
+        key: MangaKey,
+        list: Vec<Alt>,
+    },
+}
+
+/// Per-source limit when looking for the same work elsewhere.
+const ALT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Self-update state (Settings › Updates and the banner).
+#[derive(Default)]
+struct UpdateState {
+    check_on_start: bool,
+    checking: bool,
+    latest: Option<Release>,
+    error: Option<String>,
+    /// (bytes done, total) while downloading
+    progress: Option<Arc<Mutex<(u64, u64)>>>,
+    installed: Option<PathBuf>,
+    banner_hidden: bool,
 }
 
 /// Pages fetched at once per chapter download.
@@ -138,6 +174,10 @@ pub struct KumaApp {
     downloaded: Vec<Entry>,
     /// Chapters queued or downloading (by `job_key`); finished ones are removed.
     dl_status: Arc<Mutex<HashMap<String, DlStatus>>>,
+    upd: UpdateState,
+    search_history: Vec<String>,
+    /// Bookmarks page shelf filter ("" = all).
+    fav_shelf: String,
 }
 
 fn cache_read<T: DeserializeOwned>(db: &Mutex<Database>, key: &str, ttl: Duration) -> Option<T> {
@@ -189,6 +229,10 @@ impl KumaApp {
         .into_iter()
         .map(|(v, sort)| (v, BrowseState::new(sort)))
         .collect();
+        let check_updates = setting(CHECK_UPDATES_KEY).as_deref() != Some("false");
+        let search_history: Vec<String> = setting(SEARCH_HISTORY_KEY)
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
         let downloads = Downloads::new(data_dir.join("downloads"));
         let downloaded = downloads.list();
         let page_disk = DiskCache::new(data_dir.join("pages"), page_cache_mb * 1024 * 1024)
@@ -223,7 +267,218 @@ impl KumaApp {
             downloads: Arc::new(downloads),
             downloaded,
             dl_status: Arc::default(),
+            upd: UpdateState {
+                check_on_start: check_updates,
+                ..Default::default()
+            },
+            search_history,
+            fav_shelf: String::new(),
         })
+        .map(|mut app| {
+            if check_updates && !update::dev_build() {
+                app.check_update(false);
+            }
+            app
+        })
+    }
+
+    fn check_update(&mut self, manual: bool) {
+        if self.upd.checking {
+            return;
+        }
+        self.upd.checking = true;
+        self.upd.error = None;
+        self.worker.spawn(async move {
+            let result = update::latest_release().await.map_err(|e| format!("{e:#}"));
+            Msg::Update { manual, result }
+        });
+    }
+
+    fn start_install(&mut self) {
+        let Some(r) = self.upd.latest.clone() else { return };
+        let progress = Arc::new(Mutex::new((0u64, 0u64)));
+        self.upd.progress = Some(progress.clone());
+        self.upd.error = None;
+        let work = self.data_dir.join("update");
+        self.worker.spawn(async move {
+            Msg::Installed(update::install(&r, &work, &progress).await.map_err(|e| format!("{e:#}")))
+        });
+    }
+
+    /// Starts the installed version and closes this one.
+    fn restart_into(&mut self, ctx: &egui::Context, exe: &std::path::Path) {
+        match std::process::Command::new(exe).spawn() {
+            Ok(_) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => self.upd.error = Some(format!("Could not start the new version: {e}")),
+        }
+    }
+
+    /// "A new version is out" strip at the top of the content.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = self.upd.latest.clone().filter(|r| update::is_newer(r.version)) else {
+            return;
+        };
+        if self.upd.banner_hidden || self.view == View::Settings || update::dev_build() {
+            return;
+        }
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{}  KumaDoujin {} is available", icons::DOWNLOAD_SIMPLE, r.tag))
+                        .strong()
+                        .color(theme::ACCENT),
+                );
+                ui.label(RichText::new(format!("(you have {})", update::VERSION)).color(theme::MUTED));
+                if ui.button("Update…").clicked() {
+                    self.view = View::Settings;
+                    self.details = None;
+                }
+                if ui.button("Later").clicked() {
+                    self.upd.banner_hidden = true;
+                }
+            });
+        });
+        ui.add_space(10.0);
+    }
+
+    /// Settings › Diagnostics: log folder and a copyable report of every source's state.
+    fn diagnostics_card(&self, ui: &mut egui::Ui) {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Diagnostics").strong().size(16.0));
+            ui.label(
+                RichText::new("When something breaks, attach the report (and the log file) to an issue on GitHub.")
+                    .small()
+                    .color(theme::MUTED),
+            );
+            ui.horizontal(|ui| {
+                if ui.button(theme::label(icons::FOLDER_OPEN, "Open log folder")).clicked() {
+                    // explorer.exe returns 1 even on success, so its status is not checked
+                    let _ = std::process::Command::new("explorer").arg(&self.data_dir).spawn();
+                }
+                if ui
+                    .button(theme::label(icons::COPY, "Copy diagnostics"))
+                    .on_hover_text("App version and the status / last error of every source")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(self.diagnostics());
+                }
+                ui.hyperlink_to("Report a problem", format!("https://github.com/{}/issues/new", update::REPO));
+            });
+        });
+        ui.add_space(12.0);
+    }
+
+    fn diagnostics(&self) -> String {
+        let mut out = format!(
+            "KumaDoujin {} · {} · helper browser: {}\n\nSources:\n",
+            update::VERSION,
+            std::env::consts::OS,
+            if std::env::current_exe()
+                .ok()
+                .and_then(|p| Some(p.parent()?.join("kuma-browser.exe")))
+                .is_some_and(|p| p.exists())
+            {
+                "present"
+            } else {
+                "missing"
+            }
+        );
+        for s in self.registry.all() {
+            let h = self.health.get(&s.info.id);
+            let enabled = if self.registry.is_enabled(&s.info.id) { "on" } else { "off" };
+            out += &format!(
+                "- {} [{enabled}] {:?} · {} ok / {} failed · avg {} ms",
+                s.info.name,
+                h.status(),
+                h.ok,
+                h.failed,
+                h.avg_latency().map_or(0, |d| d.as_millis())
+            );
+            if let Some(e) = &h.last_error {
+                out += &format!("\n    last error: {e}");
+            }
+            out += "\n";
+        }
+        out
+    }
+
+    /// Settings › Updates.
+    fn updates_card(&mut self, ui: &mut egui::Ui) {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Updates").strong().size(16.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("KumaDoujin {}", update::VERSION)).strong());
+                ui.label(RichText::new(format!("· from github.com/{}", update::REPO)).color(theme::MUTED));
+            });
+            if ui
+                .checkbox(&mut self.upd.check_on_start, "Look for a new version when the app starts")
+                .changed()
+            {
+                self.save_setting(CHECK_UPDATES_KEY, self.upd.check_on_start.to_string());
+            }
+            ui.horizontal(|ui| {
+                if self.upd.checking {
+                    ui.spinner();
+                    ui.label(RichText::new("Checking…").color(theme::MUTED));
+                } else if ui.button(theme::label(icons::ARROW_CLOCKWISE, "Check now")).clicked() {
+                    self.check_update(true);
+                }
+                match &self.upd.latest {
+                    Some(r) if update::is_newer(r.version) => {
+                        ui.label(RichText::new(format!("{} is available", r.tag)).strong().color(theme::ACCENT));
+                    }
+                    Some(r) => {
+                        ui.label(RichText::new(format!("Up to date (newest: {})", r.tag)).color(theme::MUTED));
+                    }
+                    None => {}
+                }
+            });
+            if let Some(e) = &self.upd.error {
+                ui.colored_label(egui::Color32::from_rgb(0xE5, 0x6B, 0x6F), e);
+            }
+            let Some(r) = self.upd.latest.clone().filter(|r| update::is_newer(r.version)) else {
+                return;
+            };
+            if !r.notes.is_empty() {
+                egui::CollapsingHeader::new("What's new").id_salt("relnotes").show(ui, |ui| {
+                    ui.label(RichText::new(&r.notes).small());
+                });
+            }
+            if let Some(p) = &self.upd.progress {
+                let (done, total) = p.lock().map(|g| *g).unwrap_or((0, 0));
+                let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                let mb = |b: u64| b as f64 / 1_048_576.0;
+                ui.add(egui::ProgressBar::new(frac).text(format!("{:.1} / {:.1} MB", mb(done), mb(total))));
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            } else if let Some(exe) = self.upd.installed.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Installed — restart to use it").color(theme::ACCENT));
+                    if ui.button(theme::label(icons::ARROW_CLOCKWISE, "Restart now")).clicked() {
+                        self.restart_into(&ui.ctx().clone(), &exe);
+                    }
+                });
+            } else if update::dev_build() {
+                ui.label(
+                    RichText::new("This copy runs from the source folder (cargo build): update it with git, or download the release:")
+                        .color(theme::MUTED),
+                );
+                ui.hyperlink(&r.page);
+            } else if r.asset_url.is_some() {
+                if ui
+                    .button(theme::label(icons::DOWNLOAD_SIMPLE, &format!("Download and install {}", r.tag)))
+                    .clicked()
+                {
+                    self.start_install();
+                }
+            } else {
+                ui.label(RichText::new("This release has no Windows zip — see its page:").color(theme::MUTED));
+                ui.hyperlink(&r.page);
+            }
+        });
+        ui.add_space(12.0);
     }
 
     /// Runs `f` against the database on a blocking worker thread, never the GUI thread.
@@ -279,8 +534,37 @@ impl KumaApp {
                 if let Some(d) = &mut self.details
                     && d.key == key
                 {
-                    d.result = Some(result.map(|m| *m));
+                    if let Ok(m) = &result {
+                        let f = Favorite {
+                            key: key.clone(),
+                            title: m.titles.display().to_string(),
+                            cover_url: m.cover_url.clone(),
+                            added_at: 0,
+                            shelf: String::new(),
+                        };
+                        self.db_job(true, move |db| db.touch_viewed(&f));
+                    }
+                    if let Ok(m) = &result {
+                        self.find_alternatives(m);
+                    }
+                    if let Some(d) = &mut self.details {
+                        d.result = Some(result.map(|m| *m));
+                    }
                     self.try_resume();
+                }
+            }
+            Msg::Alternatives { key, list } => {
+                if let Some(d) = &mut self.details
+                    && d.key == key
+                {
+                    d.alternatives = Some(list);
+                }
+            }
+            Msg::ReadMarks { key, read } => {
+                if let Some(d) = &mut self.details
+                    && d.key == key
+                {
+                    d.read = read;
                 }
             }
             Msg::Chapters { key, lang, result } => {
@@ -320,6 +604,22 @@ impl KumaApp {
                 }
             }
             Msg::Downloads(list) => self.downloaded = list,
+            Msg::Update { manual, result } => {
+                self.upd.checking = false;
+                match result {
+                    Ok(r) => self.upd.latest = Some(r),
+                    // a failed check at start-up stays quiet; only "Check now" reports it
+                    Err(e) if manual => self.upd.error = Some(e),
+                    Err(e) => tracing::info!(error = %e, "update check failed"),
+                }
+            }
+            Msg::Installed(result) => {
+                self.upd.progress = None;
+                match result {
+                    Ok(exe) => self.upd.installed = Some(exe),
+                    Err(e) => self.upd.error = Some(e),
+                }
+            }
         }
     }
 
@@ -357,6 +657,18 @@ impl KumaApp {
         st.result = None; // results of the previous query must not show as partial ones
         let generation = st.generation;
         let mut query = st.query.clone();
+        let text = query.text.trim().to_string();
+        if view == View::Search && !text.is_empty() {
+            self.search_history.retain(|h| !h.eq_ignore_ascii_case(&text));
+            self.search_history.insert(0, text);
+            self.search_history.truncate(SEARCH_HISTORY_MAX);
+            if let Ok(json) = serde_json::to_string(&self.search_history) {
+                self.save_setting(SEARCH_HISTORY_KEY, json);
+            }
+        }
+        let Some(st) = self.browse.get_mut(&view) else {
+            return;
+        };
         query.include_adult = show_adult;
         query.category = category;
         let key = format!(
@@ -402,7 +714,10 @@ impl KumaApp {
             result: None,
             chapters: None,
             chapter_lang: lang.unwrap_or_else(|| self.chapter_lang.clone()),
+            read: Default::default(),
+            alternatives: None,
         });
+        self.load_read_marks(key.clone());
         let Some((can_read, catalog)) = self
             .registry
             .get(&key.source)
@@ -630,7 +945,12 @@ impl KumaApp {
             cover_url: r.cover_url.clone(),
             updated_at: 0,
         };
+        let finished = (r.current + self.reader_settings.layout.visible() >= total)
+            .then(|| (r.manga.clone(), chapter.id.clone()));
         self.db_job(false, move |db| db.save_progress(&p));
+        if let Some((key, id)) = finished {
+            self.mark_read(key, vec![id], true); // reached the last page
+        }
     }
 
     fn is_bookmarked(&self, r: &ReaderState) -> bool {
@@ -789,7 +1109,99 @@ impl KumaApp {
             result: Some(Ok(entry.manga.clone())),
             chapters: Some(Ok(entry.chapters.iter().map(|c| c.chapter.clone()).collect())),
             chapter_lang: String::new(),
+            read: Default::default(),
+            alternatives: Some(vec![]), // offline: no searching
         });
+        self.load_read_marks(entry.manga.key.clone());
+    }
+
+    /// Searches the other enabled reading sources for this work (best title match on each).
+    fn find_alternatives(&mut self, m: &Manga) {
+        let key = m.key.clone();
+        let title = m.titles.display().to_string();
+        let others: Vec<(String, Arc<dyn crate::sources::traits::CatalogProvider>, Arc<dyn crate::sources::traits::ChapterProvider>)> = self
+            .registry
+            .all()
+            .iter()
+            .filter(|s| s.info.id != key.source && s.can_read() && self.registry.is_enabled(&s.info.id))
+            .filter(|s| self.show_adult || !s.info.adult)
+            .filter_map(|s| Some((s.info.name.clone(), s.catalog.clone()?, s.chapters.clone()?)))
+            .collect();
+        let show_adult = self.show_adult;
+        self.worker.spawn(async move {
+            let words = crate::discovery::aggregator::words(&title);
+            let mut set = tokio::task::JoinSet::new();
+            for (source, catalog, chapters) in others {
+                let (title, words) = (title.clone(), words.clone());
+                set.spawn(async move {
+                    let started = Instant::now();
+                    let q = crate::core::models::SearchQuery {
+                        text: title,
+                        page: 1,
+                        include_adult: show_adult,
+                        ..Default::default()
+                    };
+                    let found = tokio::time::timeout(ALT_TIMEOUT, catalog.search(&q)).await.ok()?.ok()?;
+                    // only a confident match: every word of the title present
+                    let best = found
+                        .items
+                        .into_iter()
+                        .map(|m| (crate::discovery::aggregator::relevance(&words, &m), m))
+                        .filter(|(score, _)| *score >= 200)
+                        .max_by_key(|(score, _)| *score)?
+                        .1;
+                    let list = tokio::time::timeout(ALT_TIMEOUT, chapters.chapters(&best.key.id, &[]))
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    Some(Alt {
+                        title: best.titles.display().to_string(),
+                        key: best.key,
+                        source,
+                        chapters: list.as_ref().map(Vec::len),
+                        latest: list.as_ref().and_then(|l| l.last()).map(Chapter::label),
+                        ms: started.elapsed().as_millis() as u64,
+                    })
+                });
+            }
+            let mut list = Vec::new();
+            while let Some(r) = set.join_next().await {
+                if let Ok(Some(a)) = r {
+                    list.push(a);
+                }
+            }
+            list.sort_by_key(|a| (std::cmp::Reverse(a.chapters.unwrap_or(0)), a.ms));
+            Msg::Alternatives { key, list }
+        });
+    }
+
+    fn load_read_marks(&self, key: MangaKey) {
+        let db = self.db.clone();
+        self.worker.spawn(async move {
+            let read = tokio::task::spawn_blocking({
+                let key = key.clone();
+                move || db.lock().ok().and_then(|db| db.read_chapters(&key).ok()).unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            Msg::ReadMarks { key, read }
+        });
+    }
+
+    /// Marks chapters read/unread on the open details page and in the database.
+    fn mark_read(&mut self, key: MangaKey, ids: Vec<String>, read: bool) {
+        if let Some(d) = &mut self.details
+            && d.key == key
+        {
+            for id in &ids {
+                if read {
+                    d.read.insert(id.clone());
+                } else {
+                    d.read.remove(id);
+                }
+            }
+        }
+        self.db_job(false, move |db| db.set_chapters_read(&key, &ids, read));
     }
 
     fn delete_download(&mut self, key: MangaKey) {
@@ -947,6 +1359,9 @@ impl KumaApp {
         if let Some(id) = a.delete_bookmark {
             self.db_job(true, move |db| db.delete_bookmark(id));
         }
+        if a.clear_viewed {
+            self.db_job(true, |db| db.clear_recently_viewed());
+        }
     }
 
     fn set_category(&mut self, c: Category) {
@@ -993,7 +1408,12 @@ impl KumaApp {
 
     fn details_page(&mut self, ui: &mut egui::Ui) {
         let Some(d) = &mut self.details else { return };
-        let favorite = self.library.favorites.iter().any(|f| f.key == d.key);
+        let favorite = self
+            .library
+            .favorites
+            .iter()
+            .find(|f| f.key == d.key)
+            .map(|f| f.shelf.clone());
         let progress = self.library.recent.iter().find(|p| p.at.key == d.key);
         let prefix = job_key(&d.key, "");
         let dl = DlInfo {
@@ -1008,19 +1428,31 @@ impl KumaApp {
                 })
                 .unwrap_or_default(),
         };
-        let a = browse::details(ui, d, &self.registry, &mut self.covers, favorite, progress, &dl);
-        let fav = match &d.result {
-            Some(Ok(m)) if a.toggle_favorite => Some(Favorite {
-                key: d.key.clone(),
-                title: m.titles.display().to_string(),
-                cover_url: m.cover_url.clone(),
-                added_at: 0,
-            }),
+        let a = browse::details(ui, d, &self.registry, &mut self.covers, favorite.as_deref(), progress, &dl);
+        let fav = match (&d.result, a.favorite) {
+            (Some(Ok(m)), Some(shelf)) => Some((
+                Favorite {
+                    key: d.key.clone(),
+                    title: m.titles.display().to_string(),
+                    cover_url: m.cover_url.clone(),
+                    added_at: 0,
+                    shelf: shelf.clone().unwrap_or_default(),
+                },
+                shelf.is_some(),
+            )),
             _ => None,
         };
         let lang = d.chapter_lang.clone();
-        if let Some(fav) = fav {
-            self.db_job(true, move |db| db.set_favorite(&fav, !favorite));
+        let key = d.key.clone();
+        if let Some((fav, on)) = fav {
+            self.db_job(true, move |db| db.set_favorite(&fav, on));
+        }
+        if let Some((ids, read)) = a.mark_read {
+            self.mark_read(key, ids, read);
+        }
+        if let Some(other) = a.open_other {
+            self.open_details(other, None);
+            return;
         }
         if a.reload_chapters {
             self.chapter_lang = lang;
@@ -1042,6 +1474,7 @@ impl KumaApp {
     }
 
     fn content(&mut self, ui: &mut egui::Ui) -> Actions {
+        self.update_banner(ui);
         if self.details.is_some() {
             self.details_page(ui);
             return Actions::default();
@@ -1083,6 +1516,8 @@ impl KumaApp {
                     "Continue where you left off, or find something new",
                 );
                 library::continue_row(ui, &self.library.recent, &mut self.covers, &mut lib);
+                ui.add_space(20.0);
+                library::viewed_row(ui, &self.library.viewed, &mut self.covers, now, &mut lib);
                 if reg.catalogs().next().is_none() {
                     views::empty_state(ui, "No sources", views::NO_CATALOG);
                 } else {
@@ -1116,6 +1551,7 @@ impl KumaApp {
                     &self.tags,
                     &mut self.covers,
                     self.show_adult && self.category == Category::Doujin,
+                    if self.view == View::Search { &self.search_history } else { &[] },
                 )
             }
             View::Bookmarks => {
@@ -1125,6 +1561,7 @@ impl KumaApp {
                     &self.library.bookmarks,
                     &mut self.covers,
                     now,
+                    &mut self.fav_shelf,
                 );
                 self.library_action(a);
                 Actions::default()
@@ -1175,6 +1612,8 @@ impl KumaApp {
                 Actions::default()
             }
             View::Settings => {
+                self.updates_card(ui);
+                self.diagnostics_card(ui);
                 let mut adult = self.show_adult;
                 let s = views::settings(
                     ui,
@@ -1325,6 +1764,10 @@ impl eframe::App for KumaApp {
         }
         if let Some(key) = actions.open {
             self.open_details(key, None);
+        }
+        if actions.clear_search_history {
+            self.search_history.clear();
+            self.save_setting(SEARCH_HISTORY_KEY, "[]".into());
         }
         if let Some(src) = actions.load_tags {
             self.load_tags(src);

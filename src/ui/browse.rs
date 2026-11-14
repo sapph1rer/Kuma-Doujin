@@ -12,7 +12,7 @@ use tokio::task::AbortHandle;
 use super::views::empty_state;
 use super::{icons, theme};
 use crate::core::models::{Chapter, Manga, MangaKey, MangaSummary, SearchQuery, SortOrder, Tag};
-use crate::database::library::{Progress, ResumePoint};
+use crate::database::library::{Progress, ResumePoint, SHELVES};
 use crate::discovery::aggregator::Aggregated;
 use crate::downloads::{DlStatus, Entry};
 use crate::sources::registry::SourceRegistry;
@@ -72,6 +72,7 @@ pub enum TagsSlot {
 pub struct Actions {
     pub open: Option<MangaKey>,
     pub load_tags: Option<String>,
+    pub clear_search_history: bool,
     /// User toggled the 18+ filter (the app confirms age before enabling).
     pub set_adult: Option<bool>,
 }
@@ -267,6 +268,8 @@ pub fn browse(
     covers: &mut Covers,
     // 18+ sources are listed only in the Doujin category with 18+ mode on
     adult_sources: bool,
+    // recent searches offered under the search bar (empty: none shown)
+    history: &[String],
 ) -> Actions {
     let mut actions = Actions::default();
     theme::hero(ui, title, subtitle);
@@ -374,6 +377,20 @@ pub fn browse(
         }
         reload |= before != after;
     });
+    if !history.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("{} Recent:", icons::CLOCK_COUNTER_CLOCKWISE)).color(theme::MUTED));
+            for h in history {
+                if ui.add(egui::Button::new(RichText::new(h).small()).corner_radius(12)).clicked() {
+                    st.query.text = h.clone();
+                    reload = true;
+                }
+            }
+            if ui.small_button("Clear").clicked() {
+                actions.clear_search_history = true;
+            }
+        });
+    }
     if reload {
         st.query.page = 1;
         st.needs_load = true;
@@ -469,6 +486,22 @@ pub struct DetailsState {
     pub chapters: Option<Result<Vec<Chapter>, String>>,
     /// Translation language for the chapter list ("" = any).
     pub chapter_lang: String,
+    /// Chapter ids marked read.
+    pub read: std::collections::HashSet<String>,
+    /// The same work on other reading sources; `None` while searching.
+    pub alternatives: Option<Vec<Alt>>,
+}
+
+/// One match of the open work on another source.
+#[derive(Debug, Clone)]
+pub struct Alt {
+    pub key: MangaKey,
+    pub source: String,
+    pub title: String,
+    pub chapters: Option<usize>,
+    pub latest: Option<String>,
+    /// How long that source took to answer (search + chapter list).
+    pub ms: u64,
 }
 
 #[derive(Default)]
@@ -478,7 +511,12 @@ pub struct DetailsAction {
     pub read: Option<usize>,
     pub reload_chapters: bool,
     pub resume: Option<ResumePoint>,
-    pub toggle_favorite: bool,
+    /// Some(Some(shelf)): favorite on that shelf; Some(None): remove from favorites.
+    pub favorite: Option<Option<String>>,
+    /// (chapter ids, read?)
+    pub mark_read: Option<(Vec<String>, bool)>,
+    /// Open the same work on another source.
+    pub open_other: Option<MangaKey>,
     /// Download these chapter indices for offline reading.
     pub download: Vec<usize>,
 }
@@ -495,7 +533,8 @@ pub fn details(
     st: &mut DetailsState,
     reg: &SourceRegistry,
     covers: &mut Covers,
-    favorite: bool,
+    // current shelf if favorited
+    favorite: Option<&str>,
     progress: Option<&Progress>,
     dl: &DlInfo,
 ) -> DetailsAction {
@@ -647,14 +686,26 @@ pub fn details(
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let fav = if favorite {
-                    theme::label(icons::HEART, "Favorited").color(theme::ACCENT)
-                } else {
-                    theme::label(icons::HEART, "Add to favorites")
+                let shelf_name = |id: &str| SHELVES.iter().find(|s| s.0 == id).map_or(id.to_string(), |s| s.1.to_string());
+                let fav = match favorite {
+                    Some(s) => theme::label(icons::HEART, &format!("{} ▾", shelf_name(s))).color(theme::ACCENT),
+                    None => theme::label(icons::HEART, "Add to favorites ▾"),
                 };
-                if ui.button(fav).clicked() {
-                    action.toggle_favorite = true;
-                }
+                ui.menu_button(fav, |ui| {
+                    for (id, name) in SHELVES {
+                        if ui.selectable_label(favorite == Some(id), name).clicked() {
+                            action.favorite = Some(Some(id.to_string()));
+                            ui.close();
+                        }
+                    }
+                    if favorite.is_some() {
+                        ui.separator();
+                        if ui.button(theme::label(icons::TRASH, "Remove from favorites")).clicked() {
+                            action.favorite = Some(None);
+                            ui.close();
+                        }
+                    }
+                });
                 ui.label(RichText::new("Source:").small().color(theme::MUTED));
                 match &m.source_url {
                     Some(url) => ui.hyperlink_to(RichText::new(source_name).small(), url),
@@ -688,10 +739,56 @@ pub fn details(
         });
     }
     if source.is_some_and(|s| s.can_read()) {
+        alternatives(ui, st, &mut action);
         ui.add_space(16.0);
         chapter_list(ui, st, &mut action, dl);
     }
     action
+}
+
+/// "Also on" list: the same work on other sources, with chapter counts and response times.
+fn alternatives(ui: &mut egui::Ui, st: &DetailsState, action: &mut DetailsAction) {
+    let Some(list) = &st.alternatives else {
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Looking for this title on other sources…").color(theme::MUTED));
+        });
+        return;
+    };
+    if list.is_empty() {
+        return;
+    }
+    ui.add_space(16.0);
+    ui.label(RichText::new("Also on other sources").strong().size(18.0));
+    ui.add_space(4.0);
+    let most = list.iter().filter_map(|a| a.chapters).max();
+    let fastest = list.iter().map(|a| a.ms).min();
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for a in list {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&a.source).strong());
+                ui.add(egui::Label::new(RichText::new(&a.title).color(theme::MUTED)).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(theme::label(icons::BOOK_OPEN, "Open")).clicked() {
+                        action.open_other = Some(a.key.clone());
+                    }
+                    ui.label(RichText::new(format!("{} ms", a.ms)).small().color(theme::MUTED));
+                    if Some(a.ms) == fastest && list.len() > 1 {
+                        ui.label(RichText::new("Fastest").small().color(theme::ACCENT));
+                    }
+                    if let Some(n) = a.chapters {
+                        let latest = a.latest.as_deref().map(|l| format!(" · latest {l}")).unwrap_or_default();
+                        ui.label(format!("{n} chapters{latest}"));
+                        if Some(n) == most && list.len() > 1 {
+                            ui.label(RichText::new("Most chapters").small().color(theme::ACCENT));
+                        }
+                    }
+                });
+            });
+        }
+    });
 }
 
 fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAction, dl: &DlInfo) {
@@ -761,16 +858,38 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                     if hov > 0.0 {
                         ui.painter().rect_filled(rect, 6, theme::SURFACE.gamma_multiply(hov));
                     }
+                    let read = st.read.contains(&c.id);
+                    let (mark, color) = if read {
+                        (icons::CHECK, theme::MUTED)
+                    } else {
+                        ("", ui.visuals().text_color())
+                    };
                     ui.painter().with_clip_rect(rect).text(
                         rect.left_center() + vec2(10.0, 0.0),
                         egui::Align2::LEFT_CENTER,
-                        text,
+                        format!("{mark} {text}"),
                         egui::FontId::proportional(14.5),
-                        ui.visuals().text_color(),
+                        color,
                     );
-                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() {
                         action.read = Some(i);
                     }
+                    resp.context_menu(|ui| {
+                        let label = if read { "Mark as unread" } else { "Mark as read" };
+                        if ui.button(label).clicked() {
+                            action.mark_read = Some((vec![c.id.clone()], !read));
+                            ui.close();
+                        }
+                        if ui.button("Mark this and earlier as read").clicked() {
+                            action.mark_read = Some((list[..=i].iter().map(|c| c.id.clone()).collect(), true));
+                            ui.close();
+                        }
+                        if ui.button("Mark all as unread").clicked() {
+                            action.mark_read = Some((list.iter().map(|c| c.id.clone()).collect(), false));
+                            ui.close();
+                        }
+                    });
                     if dl.saved.is_some_and(|e| e.has(&c.id)) {
                         ui.label(RichText::new(format!("{} Offline", icons::CHECK)).color(theme::ACCENT))
                             .on_hover_text("Saved; reads without a connection");

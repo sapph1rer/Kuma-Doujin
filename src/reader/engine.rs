@@ -38,6 +38,14 @@ pub struct ReaderSettings {
     pub auto_scroll_speed: f32,
     /// Gap between pages in the vertical layout, in points.
     pub page_gap: f32,
+    /// Vertical layout: scrolling past the last page opens the next chapter.
+    pub continuous: bool,
+    /// Eye-comfort mode: dims and warms the pages (toggle with N).
+    pub night: bool,
+    /// Night mode brightness, 0.3..1.
+    pub night_brightness: f32,
+    /// Night mode warmth (less blue), 0..1.
+    pub night_warmth: f32,
 }
 
 impl Default for ReaderSettings {
@@ -52,6 +60,10 @@ impl Default for ReaderSettings {
             scroll_speed: 1.0,
             auto_scroll_speed: 120.0,
             page_gap: 4.0,
+            continuous: true,
+            night: false,
+            night_brightness: 0.75,
+            night_warmth: 0.5,
         }
     }
 }

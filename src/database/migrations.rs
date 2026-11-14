@@ -78,6 +78,26 @@ ALTER TABLE bookmarks ADD COLUMN chapter_label TEXT NOT NULL DEFAULT '';
 ALTER TABLE bookmarks ADD COLUMN chapter_lang TEXT NOT NULL DEFAULT '';
 CREATE INDEX bookmarks_created ON bookmarks(created_at DESC);
 "#,
+    // 3: read marks per chapter, recently viewed titles, favorite shelves.
+    r#"
+CREATE TABLE read_chapters (
+    source_id  TEXT NOT NULL,
+    manga_id   TEXT NOT NULL,
+    chapter_id TEXT NOT NULL,
+    read_at    INTEGER NOT NULL,
+    PRIMARY KEY (source_id, manga_id, chapter_id)
+);
+CREATE TABLE recently_viewed (
+    source_id  TEXT NOT NULL,
+    manga_id   TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    cover_url  TEXT,
+    viewed_at  INTEGER NOT NULL,
+    PRIMARY KEY (source_id, manga_id)
+);
+CREATE INDEX recently_viewed_at ON recently_viewed(viewed_at DESC);
+ALTER TABLE favorites ADD COLUMN shelf TEXT NOT NULL DEFAULT 'reading';
+"#,
 ];
 
 pub fn run(conn: &mut Connection) -> rusqlite::Result<()> {

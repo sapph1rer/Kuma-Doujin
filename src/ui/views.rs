@@ -92,7 +92,17 @@ pub fn sources(
                 ui.label(RichText::new(text).small());
             });
             if let Some(e) = h.last_error.as_ref().filter(|_| h.status() != Status::Healthy) {
-                ui.label(RichText::new(e).small().color(theme::MUTED));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(e).small().color(theme::MUTED));
+                    if ui.small_button("Copy error").on_hover_text("Copy for a bug report").clicked() {
+                        ui.ctx().copy_text(format!(
+                            "KumaDoujin {} · source {} ({})\n{e}",
+                            crate::update::VERSION,
+                            s.info.name,
+                            s.info.homepage
+                        ));
+                    }
+                });
             }
             if !s.info.in_discover {
                 ui.label(
@@ -167,7 +177,7 @@ pub fn settings(
         super::reader::reader_sliders(ui, reader);
         ui.add(egui::Slider::new(&mut reader.preload, 1..=8).text("Pages to preload ahead"));
         ui.label(
-            RichText::new("Keys: Space/PageDown next · arrows scroll · A auto-scroll · B bookmark · F fullscreen · T toolbar")
+            RichText::new("Keys: Space/PageDown next · arrows scroll · A auto-scroll · N night · Ctrl+wheel or double-click zoom · B bookmark · F fullscreen · T toolbar")
                 .small()
                 .color(theme::MUTED),
         );

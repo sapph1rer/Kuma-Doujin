@@ -45,7 +45,10 @@ pub struct ReaderState {
     fullscreen: bool,
     /// Vertical layout: current scroll offset, and whether auto-scroll is running.
     offset: f32,
+    offset_x: f32,
     pub auto_scroll: bool,
+    /// After a double-click zoom: the point to bring to the centre (fraction of the content).
+    zoom_focus: Option<Vec2>,
 }
 
 #[derive(Default)]
@@ -88,7 +91,9 @@ impl ReaderState {
             scroll_to: Some(0),
             fullscreen: false,
             offset: 0.0,
+            offset_x: 0.0,
             auto_scroll: false,
+            zoom_focus: None,
         }
     }
 
@@ -256,6 +261,19 @@ fn keyboard(ctx: &egui::Context, st: &mut ReaderState, s: &mut ReaderSettings) -
     if pressed(Key::A) && !paged {
         st.auto_scroll = !st.auto_scroll;
     }
+    if pressed(Key::N) {
+        s.night = !s.night;
+        a.settings_changed = true;
+    }
+    // Ctrl + mouse wheel (or pinch) zooms
+    let pinch = ctx.input(|i| i.zoom_delta());
+    if pinch != 1.0 {
+        let old = st.zoom;
+        st.zoom = (st.zoom * pinch).clamp(0.2, 5.0);
+        if !paged && old > 0.0 {
+            st.offset *= st.zoom / old; // keep the same spot in view
+        }
+    }
     if pressed(Key::T) {
         s.toolbar_collapsed = !s.toolbar_collapsed;
         a.settings_changed = true;
@@ -310,10 +328,15 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
     );
 
     let mut action = ReaderAction::default();
-    egui::ScrollArea::both()
+    let mut area = egui::ScrollArea::both()
         .id_salt(("paged", st.generation, st.current))
-        .auto_shrink(false)
-        .show(ui, |ui| {
+        .auto_shrink(false);
+    if let Some(f) = st.zoom_focus.take() {
+        let full = content.max(avail);
+        area = area.scroll_offset(vec2(f.x * full.x - avail.x / 2.0, f.y * full.y - avail.y / 2.0).max(Vec2::ZERO));
+    }
+    let tint = page_tint(s);
+    area.show(ui, |ui| {
             let (rect, resp) = ui.allocate_exact_size(content.max(avail), Sense::click());
             let mut x = rect.center().x - content.x / 2.0;
             for (i, size) in idx.iter().zip(&sizes) {
@@ -321,7 +344,7 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
                 x += size.x;
                 match st.slots.get(i) {
                     Some(PageSlot::Ready(t)) => {
-                        egui::Image::new((t.id(), t.size_vec2())).paint_at(ui, page_rect);
+                        egui::Image::new((t.id(), t.size_vec2())).tint(tint).paint_at(ui, page_rect);
                     }
                     Some(PageSlot::Failed(e)) => {
                         if failed_page(ui, page_rect, e) {
@@ -336,8 +359,22 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
                     }
                 }
             }
+            // Double-click zooms in on that spot (or back out).
+            if resp.double_clicked()
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                if st.zoom > 1.01 {
+                    st.zoom = 1.0;
+                } else {
+                    st.zoom = 2.0;
+                    st.zoom_focus = Some(((p - rect.min) / rect.size()).clamp(Vec2::ZERO, Vec2::splat(1.0)));
+                }
+                return;
+            }
             // Click the left/right third to turn pages; direction follows the reading order.
+            // While zoomed in, clicks are for panning, not turning.
             if resp.clicked()
+                && st.zoom <= 1.01
                 && let Some(p) = resp.interact_pointer_pos()
             {
                 let third = ui.clip_rect().width() / 3.0;
@@ -380,9 +417,11 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
         .collect();
     let full_height = tops.last().zip(heights.last()).map_or(0.0, |(t, h)| t + h);
 
-    let mut area = egui::ScrollArea::vertical()
+    let mut area = egui::ScrollArea::both()
         .id_salt(("vertical", st.generation))
         .auto_shrink(false);
+    let has_next = st.chapter + 1 < st.chapters.len();
+    let at_end = total > 0 && st.offset + 2.0 >= full_height - avail.y;
     // Extra scrolling on top of egui's own: speed multiplier, held arrow keys, auto-scroll.
     let (wheel, dt, down, up) = ui.input(|i| {
         (i.smooth_scroll_delta.y, i.stable_dt.min(0.1), i.key_down(Key::ArrowDown), i.key_down(Key::ArrowUp))
@@ -398,25 +437,50 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
     if st.auto_scroll {
         extra += s.auto_scroll_speed * dt;
         ui.ctx().request_repaint();
-        if st.offset + 1.0 >= full_height - avail.y {
+        if at_end && !(s.continuous && has_next) {
             st.auto_scroll = false; // reached the end of the chapter
         }
+    }
+    let mut action = ReaderAction::default();
+    // keep reading: pushing past the last page (wheel, arrow, auto-scroll) opens the next chapter
+    if s.continuous && has_next && at_end && (wheel < 0.0 || down || st.auto_scroll) {
+        action.open_chapter = Some((st.chapter + 1, false));
     }
     if down || up {
         ui.ctx().request_repaint();
     }
+    let content_w = width.max(avail.x);
     if let Some(i) = st.scroll_to.take()
         && i < tops.len()
     {
         area = area.vertical_scroll_offset(tops[i]);
+    } else if let Some(f) = st.zoom_focus.take() {
+        area = area.scroll_offset(vec2(
+            (f.x * content_w - avail.x / 2.0).max(0.0),
+            (f.y * full_height - avail.y / 2.0).max(0.0),
+        ));
     } else if extra != 0.0 {
         area = area.vertical_scroll_offset((st.offset + extra).max(0.0));
     }
-    let mut action = ReaderAction::default();
+    let tint = page_tint(s);
     let out = area.show_viewport(ui, |ui, viewport| {
         ui.set_height(full_height);
+        ui.set_width(content_w);
+        let bg = ui.interact(viewport.translate(ui.min_rect().min.to_vec2()), egui::Id::unique(("vertical-zoom", st.generation)), Sense::click());
+        if bg.double_clicked()
+            && let Some(p) = bg.interact_pointer_pos()
+        {
+            let rel = p - ui.min_rect().min;
+            if st.zoom > 1.01 {
+                st.zoom = 1.0;
+                st.zoom_focus = Some(vec2(0.5, rel.y / full_height.max(1.0)));
+            } else {
+                st.zoom = 2.0;
+                st.zoom_focus = Some(vec2(rel.x / content_w.max(1.0), rel.y / full_height.max(1.0)));
+            }
+        }
         let origin = ui.min_rect().min;
-        let left = origin.x + (avail.x - width).max(0.0) / 2.0;
+        let left = origin.x + (content_w - width).max(0.0) / 2.0;
         // The page under 40% of the viewport counts as current.
         let probe = viewport.top() + viewport.height() * 0.4;
         st.current = tops.iter().rposition(|t| *t <= probe).unwrap_or(0);
@@ -428,7 +492,7 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
             let r = Rect::from_min_size(pos2(left, origin.y + top), vec2(width, h));
             match st.slots.get(&i) {
                 Some(PageSlot::Ready(t)) => {
-                    egui::Image::new((t.id(), t.size_vec2())).paint_at(ui, r)
+                    egui::Image::new((t.id(), t.size_vec2())).tint(tint).paint_at(ui, r)
                 }
                 Some(PageSlot::Failed(e)) => {
                     if failed_page(ui, r, e) {
@@ -445,7 +509,19 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
         }
     });
     st.offset = out.state.clamped_offset().y;
+    st.offset_x = out.state.clamped_offset().x;
     action
+}
+
+/// Page colour multiplier: white normally; dimmer and warmer (less blue) in night mode.
+fn page_tint(s: &ReaderSettings) -> Color32 {
+    if !s.night {
+        return Color32::WHITE;
+    }
+    let b = s.night_brightness.clamp(0.3, 1.0);
+    let w = s.night_warmth.clamp(0.0, 1.0);
+    let c = |v: f32| (v * b).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(c(255.0), c(255.0 - 45.0 * w), c(255.0 - 140.0 * w))
 }
 
 /// Draws an error box with a Retry button; returns true if Retry was clicked.
@@ -600,6 +676,14 @@ fn controls(
                                 st.auto_scroll = !st.auto_scroll;
                             }
                         }
+                        let night = if s.night {
+                            RichText::new("Night").color(theme::ACCENT)
+                        } else {
+                            RichText::new("Night")
+                        };
+                        if ui.button(night).on_hover_text("Eye-comfort night mode (N)").clicked() {
+                            s.night = !s.night;
+                        }
                         ui.menu_button(icons::GEAR_SIX, |ui| {
                             reader_sliders(ui, s);
                             ui.separator();
@@ -712,4 +796,12 @@ pub fn reader_sliders(ui: &mut egui::Ui, s: &mut ReaderSettings) {
             .text("Auto-scroll speed"),
     );
     ui.add(egui::Slider::new(&mut s.page_gap, 0.0..=40.0).suffix(" px").text("Gap between pages"));
+    ui.checkbox(&mut s.continuous, "Continue into the next chapter (vertical)")
+        .on_hover_text("Scrolling past the last page opens the next chapter");
+    ui.checkbox(&mut s.night, "Night mode (N)").on_hover_text("Dims and warms the pages to rest your eyes");
+    ui.add_enabled(
+        s.night,
+        egui::Slider::new(&mut s.night_brightness, 0.3..=1.0).text("Night brightness"),
+    );
+    ui.add_enabled(s.night, egui::Slider::new(&mut s.night_warmth, 0.0..=1.0).text("Night warmth"));
 }

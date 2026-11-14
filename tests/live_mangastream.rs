@@ -36,10 +36,8 @@ async fn walk(s: Source) {
     println!("  search '{}': {} items", sq.text, cat.search(&sq).await.unwrap().items.len());
 }
 
-#[tokio::test]
-#[ignore]
-async fn live() {
-    let http = Arc::new(
+fn http() -> Arc<HttpClient> {
+    Arc::new(
         HttpClient::new(
             &["dark-manga.com", "go-manga.com", "up-manga.com"],
             &[
@@ -49,8 +47,25 @@ async fn live() {
             ],
         )
         .unwrap(),
-    );
-    walk(DarkManga::source(http.clone()).unwrap()).await;
-    walk(GoManga::source(http.clone()).unwrap()).await;
-    walk(UpManga::source(http).unwrap()).await;
+    )
+}
+
+// One test per source, so a failure names the site that broke.
+
+#[tokio::test]
+#[ignore]
+async fn dark_manga() {
+    walk(DarkManga::source(http()).unwrap()).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn go_manga() {
+    walk(GoManga::source(http()).unwrap()).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn up_manga() {
+    walk(UpManga::source(http()).unwrap()).await;
 }

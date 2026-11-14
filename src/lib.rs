@@ -10,4 +10,5 @@ pub mod network;
 pub mod reader;
 pub mod sources;
 pub mod ui;
+pub mod update;
 pub mod worker;
