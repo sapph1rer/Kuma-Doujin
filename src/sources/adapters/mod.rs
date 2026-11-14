@@ -1,0 +1,9 @@
+pub mod anilist;
+pub mod mangadex;
+pub mod miku_doujin;
+pub mod doujin_lc;
+pub mod hentaithai;
+pub mod dark_manga;
+pub mod go_manga;
+pub mod kairew;
+pub mod up_manga;
