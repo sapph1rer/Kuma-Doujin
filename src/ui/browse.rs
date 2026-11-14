@@ -573,12 +573,14 @@ pub struct DetailsState {
     pub chapter_lang: String,
     /// Chapter ids marked read.
     pub read: std::collections::HashSet<String>,
-    /// The same work on other reading sources; `None` while searching.
+    /// The same work on other reading sources found so far; `None` before the first answer.
     pub alternatives: Option<Vec<Alt>>,
+    /// Every source has answered (or timed out).
+    pub alternatives_done: bool,
 }
 
 /// One match of the open work on another source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Alt {
     pub key: MangaKey,
     pub source: String,
@@ -833,19 +835,25 @@ pub fn details(
 
 /// "Also on" list: the same work on other sources, with chapter counts and response times.
 fn alternatives(ui: &mut egui::Ui, st: &DetailsState, action: &mut DetailsAction) {
-    let Some(list) = &st.alternatives else {
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(RichText::new("Looking for this title on other sources…").color(theme::MUTED));
-        });
-        return;
-    };
+    let list = st.alternatives.as_deref().unwrap_or_default();
     if list.is_empty() {
+        if !st.alternatives_done {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Looking for this title on other sources…").color(theme::MUTED));
+            });
+        }
         return;
     }
     ui.add_space(16.0);
-    ui.label(RichText::new("Also on other sources").strong().size(18.0));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Also on other sources").strong().size(18.0));
+        if !st.alternatives_done {
+            ui.spinner();
+            ui.label(RichText::new("checking more…").small().color(theme::MUTED));
+        }
+    });
     ui.add_space(4.0);
     let most = list.iter().filter_map(|a| a.chapters).max();
     let fastest = list.iter().map(|a| a.ms).min();
@@ -862,6 +870,9 @@ fn alternatives(ui: &mut egui::Ui, st: &DetailsState, action: &mut DetailsAction
                     ui.label(RichText::new(format!("{} ms", a.ms)).small().color(theme::MUTED));
                     if Some(a.ms) == fastest && list.len() > 1 {
                         ui.label(RichText::new("Fastest").small().color(theme::ACCENT));
+                    }
+                    if a.chapters.is_none() && !st.alternatives_done {
+                        ui.spinner();
                     }
                     if let Some(n) = a.chapters {
                         let latest = a.latest.as_deref().map(|l| format!(" · latest {l}")).unwrap_or_default();

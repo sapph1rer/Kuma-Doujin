@@ -52,10 +52,12 @@ impl HentaiThai {
     fn cards(html: &str) -> Vec<MangaSummary> {
         // each card's cover is a `.post_N { background-image: url(thai), url(clean) }` rule; the
         // Thai layer is only the translated text on a transparent background, so the clean page is used
-        let covers: HashMap<String, String> =
-            re(r"\.post_(\d+)\s*\{\s*background-image:\s*url\('[^']+'\),\s*url\('([^']+)'\)")
-                .captures_iter(html)
-                .map(|c| (c[1].to_string(), c[2].to_string()))
+        // newer works list two urls (Thai text layer, clean page), older ones just the page: the
+        // last url is the one that shows a picture
+        let url = re(r"url\('([^']+)'\)");
+        let covers: HashMap<String, String> = re(r"\.post_(\d+)\s*\{\s*background-image:([^;]+);")
+            .captures_iter(html)
+            .filter_map(|c| Some((c[1].to_string(), url.captures_iter(&c[2]).last()?[1].to_string())))
             .collect();
         re(r#"(?s)<a [^>]*href="/t(\d+)" title="([^"]*)"[^>]*>\s*<div class="embed-responsive post_(\d+)"#)
             .captures_iter(html)
@@ -123,7 +125,7 @@ impl CatalogProvider for HentaiThai {
             .captures_iter(&html)
             .map(|c| strip_tags(&c[1]))
             .collect();
-        let cover_url = re(r#"<img src="([^"]+)" data-layer="#).captures(&html).map(|c| c[1].to_string());
+        let cover_url = page_urls(&html).into_iter().next().map(|t| t.split('\n').next().unwrap_or("").to_string());
         Ok(Manga {
             key: MangaKey { source: ID.into(), id: id.into() },
             titles: Titles { thai: Some(thai), english, ..Default::default() },
@@ -165,11 +167,7 @@ impl ChapterProvider for HentaiThai {
 
     async fn pages(&self, chapter_id: &str) -> SourceResult<Vec<PageRef>> {
         let html = self.html(&format!("{BASE}/t{chapter_id}")).await?;
-        // each page is the untranslated `clean` image with a transparent Thai text layer on top
-        let urls: Vec<String> = re(r#"<img src="([^"]+)" data-layer="([^"]+)""#)
-            .captures_iter(&html)
-            .map(|c| format!("{}\n{}", &c[1], &c[2]))
-            .collect();
+        let urls = page_urls(&html);
         if urls.is_empty() {
             return Err(SourceError::InvalidResponse("no pages found".into()));
         }
@@ -202,6 +200,24 @@ impl ImageProvider for HentaiThai {
     }
 }
 
+/// Page tokens of a work page. Newer works: the untranslated `clean` image with a transparent Thai
+/// text layer on top (`clean\nlayer`). Older works: one image per page, alt "… - หน้า N".
+fn page_urls(html: &str) -> Vec<String> {
+    let layered: Vec<String> = re(r#"<img src="([^"]+)" data-layer="([^"]+)""#)
+        .captures_iter(html)
+        .map(|c| format!("{}\n{}", &c[1], &c[2]))
+        .collect();
+    if !layered.is_empty() {
+        return layered;
+    }
+    let mut plain: Vec<String> = re(r#"<img src="(https://[^"]+)"[^>]*alt="[^"]*หน้า \d+""#)
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .collect();
+    plain.dedup();
+    plain
+}
+
 /// Draws the transparent text layer over the page and re-encodes it as JPEG.
 fn composite(base: &[u8], layer: &[u8]) -> SourceResult<Vec<u8>> {
     let err = |e: image::ImageError| SourceError::InvalidResponse(e.to_string());
@@ -223,6 +239,21 @@ fn composite(base: &[u8], layer: &[u8]) -> SourceResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_both_page_formats_and_cover_styles() {
+        let new = r#"<img src="https://s2.x/clean/1.webp" data-layer="https://s2.x/thai/1.webp" alt="t - หน้า 1">"#;
+        assert_eq!(page_urls(new), ["https://s2.x/clean/1.webp\nhttps://s2.x/thai/1.webp"]);
+        let old = r#"<img src="https://s1.x/a-001.jpg" alt="t - หน้า 1" /><img src="https://s1.x/other/bw.jpg" alt="วิธี" />
+            <img src="https://s1.x/a-002.jpg" alt="t - หน้า 2" />"#;
+        assert_eq!(page_urls(old), ["https://s1.x/a-001.jpg", "https://s1.x/a-002.jpg"]);
+        let cards = "<style>.post_1 {\n\tbackground-image:url('https://s1.x/old.jpg');\n}</style>\
+            <a class=\"c\" href=\"/t5\" title=\"A - B\"> <div class=\"embed-responsive post_1 doujin_post\">\
+            <style>.post_2 { background-image:url('https://s2.x/thai.webp'), url('https://s2.x/clean.webp'); }</style>\
+            <a class=\"c\" href=\"/t6\" title=\"C\"> <div class=\"embed-responsive post_2 doujin_post\">";
+        let got: Vec<_> = HentaiThai::cards(cards).into_iter().map(|m| m.cover_url.unwrap()).collect();
+        assert_eq!(got, ["https://s1.x/old.jpg", "https://s2.x/clean.webp"]);
+    }
 
     #[test]
     fn composite_puts_text_layer_over_page() {

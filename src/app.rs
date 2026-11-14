@@ -120,11 +120,14 @@ pub enum Msg {
     Alternatives {
         key: MangaKey,
         list: Vec<Alt>,
+        /// false while sources are still being checked
+        done: bool,
     },
 }
 
 /// Per-source limit when looking for the same work elsewhere.
-const ALT_TIMEOUT: Duration = Duration::from_secs(20);
+const ALT_TIMEOUT: Duration = Duration::from_secs(10);
+const ALT_TTL: Duration = Duration::from_secs(6 * 3600);
 
 /// Self-update state (Settings › Updates and the banner).
 #[derive(Default)]
@@ -557,11 +560,12 @@ impl KumaApp {
                     self.try_pending_download();
                 }
             }
-            Msg::Alternatives { key, list } => {
+            Msg::Alternatives { key, list, done } => {
                 if let Some(d) = &mut self.details
                     && d.key == key
                 {
                     d.alternatives = Some(list);
+                    d.alternatives_done = done;
                 }
             }
             Msg::ReadMarks { key, read } => {
@@ -721,6 +725,7 @@ impl KumaApp {
             chapter_lang: lang.unwrap_or_else(|| self.chapter_lang.clone()),
             read: Default::default(),
             alternatives: None,
+            alternatives_done: false,
         });
         self.load_read_marks(key.clone());
         let Some((can_read, catalog)) = self
@@ -1152,6 +1157,7 @@ impl KumaApp {
             chapter_lang: String::new(),
             read: Default::default(),
             alternatives: Some(vec![]), // offline: no searching
+            alternatives_done: true,
         });
         self.load_read_marks(entry.manga.key.clone());
     }
@@ -1169,11 +1175,33 @@ impl KumaApp {
             .filter_map(|s| Some((s.info.name.clone(), s.catalog.clone()?, s.chapters.clone()?)))
             .collect();
         let show_adult = self.show_adult;
+        let (db, notify) = (self.db.clone(), self.worker.notifier());
+        let cache_key = format!("alts:{}:{}:{show_adult}", key.source, key.id);
         self.worker.spawn(async move {
+            if let Some(list) = cache_read::<Vec<Alt>>(&db, &cache_key, ALT_TTL) {
+                return Msg::Alternatives { key, list, done: true };
+            }
+            // found so far; each source shows as soon as it matches, its chapter count follows
+            let found: Arc<Mutex<Vec<Alt>>> = Arc::default();
+            let publish = {
+                let (found, notify, key) = (found.clone(), notify.clone(), key.clone());
+                move |update: Alt| {
+                    let list = {
+                        let mut f = found.lock().expect("alternatives lock");
+                        match f.iter_mut().find(|a| a.key == update.key) {
+                            Some(a) => *a = update,
+                            None => f.push(update),
+                        }
+                        f.sort_by_key(|a| (std::cmp::Reverse(a.chapters.unwrap_or(0)), a.ms));
+                        f.clone()
+                    };
+                    notify(Msg::Alternatives { key: key.clone(), list, done: false });
+                }
+            };
             let words = crate::discovery::aggregator::words(&title);
             let mut set = tokio::task::JoinSet::new();
             for (source, catalog, chapters) in others {
-                let (title, words) = (title.clone(), words.clone());
+                let (title, words, publish) = (title.clone(), words.clone(), publish.clone());
                 set.spawn(async move {
                     let started = Instant::now();
                     let q = crate::core::models::SearchQuery {
@@ -1191,28 +1219,29 @@ impl KumaApp {
                         .filter(|(score, _)| *score >= 200)
                         .max_by_key(|(score, _)| *score)?
                         .1;
-                    let list = tokio::time::timeout(ALT_TIMEOUT, chapters.chapters(&best.key.id, &[]))
-                        .await
-                        .ok()
-                        .and_then(Result::ok);
-                    Some(Alt {
+                    let mut alt = Alt {
                         title: best.titles.display().to_string(),
                         key: best.key,
                         source,
-                        chapters: list.as_ref().map(Vec::len),
-                        latest: list.as_ref().and_then(|l| l.last()).map(Chapter::label),
+                        chapters: None,
+                        latest: None,
                         ms: started.elapsed().as_millis() as u64,
-                    })
+                    };
+                    publish(alt.clone());
+                    let list = tokio::time::timeout(ALT_TIMEOUT, chapters.chapters(&alt.key.id, &[]))
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    alt.chapters = list.as_ref().map(Vec::len);
+                    alt.latest = list.as_ref().and_then(|l| l.last()).map(Chapter::label);
+                    publish(alt);
+                    Some(())
                 });
             }
-            let mut list = Vec::new();
-            while let Some(r) = set.join_next().await {
-                if let Ok(Some(a)) = r {
-                    list.push(a);
-                }
-            }
-            list.sort_by_key(|a| (std::cmp::Reverse(a.chapters.unwrap_or(0)), a.ms));
-            Msg::Alternatives { key, list }
+            while set.join_next().await.is_some() {}
+            let list = found.lock().map(|f| f.clone()).unwrap_or_default();
+            cache_write(&db, &cache_key, &key.source, &list);
+            Msg::Alternatives { key, list, done: true }
         });
     }
 
