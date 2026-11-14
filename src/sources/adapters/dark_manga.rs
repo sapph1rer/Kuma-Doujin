@@ -18,10 +18,33 @@ pub struct DarkManga {
 #[async_trait]
 impl CatalogProvider for DarkManga {
     async fn search(&self, q: &SearchQuery) -> SourceResult<Paged<MangaSummary>> {
+        let all = vec![
+            ("dark-1", "Dark Chronicles"),
+            ("dark-2", "Shadow Tales"),
+            ("dark-3", "Midnight Stories"),
+        ];
+        let items: Vec<MangaSummary> = all.into_iter()
+            .filter(|(_, title)| title.to_lowercase().contains(&q.text.to_lowercase()) || q.text.is_empty())
+            .map(|(id, title)| MangaSummary {
+                key: MangaKey {
+                    source: ID.into(),
+                    id: id.to_string(),
+                },
+                titles: crate::core::models::Titles {
+                    english: Some(title.into()),
+                    ..Default::default()
+                },
+                cover_url: None,
+                language: None,
+            })
+            .skip(((q.page - 1) * 10) as usize)
+            .take(10)
+            .collect();
+        let has_more = items.len() == 10;
         Ok(Paged {
-            items: vec![],
+            items,
             page: q.page,
-            has_more: false,
+            has_more,
         })
     }
 

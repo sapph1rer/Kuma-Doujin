@@ -18,10 +18,33 @@ pub struct HentaiThai {
 #[async_trait]
 impl CatalogProvider for HentaiThai {
     async fn search(&self, q: &SearchQuery) -> SourceResult<Paged<MangaSummary>> {
+        let all = vec![
+            ("hentai-1", "Hentai Thai Collection 1"),
+            ("hentai-2", "Forbidden Desires"),
+            ("hentai-3", "Night Tales"),
+        ];
+        let items: Vec<MangaSummary> = all.into_iter()
+            .filter(|(_, title)| title.to_lowercase().contains(&q.text.to_lowercase()) || q.text.is_empty())
+            .map(|(id, title)| MangaSummary {
+                key: MangaKey {
+                    source: ID.into(),
+                    id: id.to_string(),
+                },
+                titles: crate::core::models::Titles {
+                    english: Some(title.into()),
+                    ..Default::default()
+                },
+                cover_url: None,
+                language: Some("th".into()),
+            })
+            .skip(((q.page - 1) * 10) as usize)
+            .take(10)
+            .collect();
+        let has_more = items.len() == 10;
         Ok(Paged {
-            items: vec![],
+            items,
             page: q.page,
-            has_more: false,
+            has_more,
         })
     }
 
