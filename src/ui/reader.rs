@@ -514,11 +514,17 @@ fn controls(
                 .corner_radius(14)
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    // never wider than the window: wrap onto a second row instead of spilling off-screen
+                    ui.set_max_width(ctx.content_rect().width() - 40.0);
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button(theme::label(icons::CARET_LEFT, "Back")).clicked() {
                             action.close = true;
                         }
-                        ui.label(RichText::new(&st.title).strong());
+                        ui.scope(|ui| {
+                            ui.set_max_width(260.0);
+                            ui.add(egui::Label::new(RichText::new(&st.title).strong()).truncate())
+                                .on_hover_text(&st.title);
+                        });
                         let current = st
                             .chapters
                             .get(st.chapter)

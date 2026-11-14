@@ -754,10 +754,21 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                 let text = format!("{}   ·   {lang}{pages}   ·   {groups}", c.label());
                 ui.horizontal(|ui| {
                     const STATUS: f32 = 110.0;
-                    let row = egui::Button::new(text)
-                        .frame(false)
-                        .min_size(vec2((ui.available_width() - STATUS).max(80.0), 28.0));
-                    if ui.add(row).clicked() {
+                    // painted row: a Button centres its text, which pushed titles to the middle
+                    let width = (ui.available_width() - STATUS).max(80.0);
+                    let (rect, resp) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+                    let hov = theme::anim(ui, resp.id, resp.hovered());
+                    if hov > 0.0 {
+                        ui.painter().rect_filled(rect, 6, theme::SURFACE.gamma_multiply(hov));
+                    }
+                    ui.painter().with_clip_rect(rect).text(
+                        rect.left_center() + vec2(10.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        text,
+                        egui::FontId::proportional(14.5),
+                        ui.visuals().text_color(),
+                    );
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         action.read = Some(i);
                     }
                     if dl.saved.is_some_and(|e| e.has(&c.id)) {
