@@ -36,6 +36,15 @@ impl<M: Send + 'static> Worker<M> {
             .abort_handle()
     }
 
+    /// For tasks that report progress before their final message.
+    pub fn notifier(&self) -> impl Fn(M) + Send + Sync + Clone + 'static {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        move |m| {
+            let _ = tx.send(m);
+            ctx.request_repaint();
+        }
+    }
+
     pub fn drain(&self) -> impl Iterator<Item = M> + '_ {
         self.rx.try_iter()
     }

@@ -27,42 +27,65 @@ pub struct Aggregated {
 /// A source that has not answered by then is reported as an error; the others still show.
 const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// Queries every catalog at once. `on_partial` gets the merged results so far each time a source
+/// answers (fast sources show before slow ones); the return value is the complete result.
 pub async fn search_all(
     catalogs: Vec<CatalogRef>,
     query: SearchQuery,
     health: Arc<HealthBook>,
+    on_partial: impl Fn(&Aggregated) + Send,
 ) -> Aggregated {
-    let tasks: Vec<_> = catalogs
-        .into_iter()
-        .map(|c| {
-            let (q, health) = (query.clone(), health.clone());
-            let task = tokio::spawn(async move {
-                let started = std::time::Instant::now();
-                let res = tokio::time::timeout(SOURCE_TIMEOUT, c.provider.search(&q))
-                    .await
-                    .unwrap_or_else(|_| Err(crate::core::errors::SourceError::Network("timed out".into())));
-                health.record(&c.id, started, &res);
-                res
-            });
-            (c.name, task)
-        })
-        .collect();
+    let names: Vec<String> = catalogs.iter().map(|c| c.name.clone()).collect();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for (i, c) in catalogs.into_iter().enumerate() {
+        let (q, health, tx) = (query.clone(), health.clone(), tx.clone());
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let res = tokio::time::timeout(SOURCE_TIMEOUT, c.provider.search(&q))
+                .await
+                .unwrap_or_else(|_| Err(crate::core::errors::SourceError::Network("timed out".into())));
+            health.record(&c.id, started, &res);
+            let _ = tx.send((i, res.map_err(|e| e.to_string())));
+        });
+    }
+    drop(tx);
 
+    let mut slots: Vec<Option<Result<(Vec<MangaSummary>, bool), String>>> = vec![None; names.len()];
+    let mut answered = 0;
+    while let Some((i, res)) = rx.recv().await {
+        slots[i] = Some(res.map(|p| (p.items, p.has_more)));
+        answered += 1;
+        if answered < names.len() {
+            on_partial(&merge(&names, &slots, &query, false));
+        }
+    }
+    merge(&names, &slots, &query, true)
+}
+
+/// Round-robin merge of the answered sources, in catalog order. With `done`, sources that never
+/// answered (their task panicked) are reported as errors.
+fn merge(
+    names: &[String],
+    slots: &[Option<Result<(Vec<MangaSummary>, bool), String>>],
+    query: &SearchQuery,
+    done: bool,
+) -> Aggregated {
     let mut out = Aggregated::default();
     let mut lists = Vec::new();
-    for (name, task) in tasks {
-        match task.await {
-            Ok(Ok(page)) => {
-                out.has_more |= page.has_more;
-                lists.push(page.items.into_iter());
+    for (name, slot) in names.iter().zip(slots) {
+        match slot {
+            Some(Ok((items, more))) => {
+                out.has_more |= more;
+                lists.push(items.iter());
             }
-            Ok(Err(e)) => out.errors.push((name, e.to_string())),
-            Err(e) => out.errors.push((name, format!("task failed: {e}"))),
+            Some(Err(e)) => out.errors.push((name.clone(), e.clone())),
+            None if done => out.errors.push((name.clone(), "task failed".into())),
+            None => {}
         }
     }
     // Round-robin so no single source dominates the first rows.
     while !lists.is_empty() {
-        lists.retain_mut(|it| it.next().map(|m| out.items.push(m)).is_some());
+        lists.retain_mut(|it| it.next().map(|m| out.items.push(m.clone())).is_some());
     }
     if !query.text.trim().is_empty() {
         // best title matches first; the sort is stable, so equal scores keep the round-robin order
@@ -171,7 +194,12 @@ mod tests {
         };
         let cats = vec![cat("a", 3, false), cat("b", 1, false), cat("c", 5, true)];
         let health = Arc::new(HealthBook::default());
-        let res = search_all(cats, SearchQuery::default(), health.clone()).await;
+        let partials = std::sync::Mutex::new(0);
+        let res = search_all(cats, SearchQuery::default(), health.clone(), |_| {
+            *partials.lock().unwrap() += 1;
+        })
+        .await;
+        assert_eq!(*partials.lock().unwrap(), 2, "one update per source before the last");
         use crate::sources::health::Status;
         assert_eq!(health.get("a").status(), Status::Healthy);
         assert_eq!(health.get("c").status(), Status::Degraded);

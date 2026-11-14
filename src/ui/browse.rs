@@ -389,10 +389,18 @@ pub fn browse(
         }
     }
     match &st.result {
-        _ if st.loading => skeleton_grid(ui, 12),
+        None if st.loading => skeleton_grid(ui, 12),
+        Some(res) if st.loading && res.items.is_empty() => skeleton_grid(ui, 12),
         None => {}
         Some(res) if res.items.is_empty() => empty_state(ui, "No results", "Try other filters."),
         Some(res) => {
+            if st.loading {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Loading more sources…").color(theme::MUTED));
+                });
+                ui.add_space(8.0);
+            }
             grid(ui, &res.items, covers, reg, &mut actions);
             ui.add_space(16.0);
             ui.horizontal(|ui| {
@@ -435,7 +443,7 @@ pub fn row(
     ui.label(RichText::new(title).strong().size(18.0));
     ui.add_space(6.0);
     match &st.result {
-        Some(res) if !st.loading => {
+        Some(res) if !res.items.is_empty() => {
             egui::ScrollArea::horizontal()
                 .id_salt(title)
                 .show(ui, |ui| {

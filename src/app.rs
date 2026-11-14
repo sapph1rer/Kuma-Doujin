@@ -70,6 +70,8 @@ pub enum Msg {
         view: View,
         generation: u64,
         result: Aggregated,
+        /// false for partial results while slower sources are still loading
+        done: bool,
     },
     Details {
         key: MangaKey,
@@ -261,12 +263,15 @@ impl KumaApp {
                 view,
                 generation,
                 result,
+                done,
             } => {
                 if let Some(st) = self.browse.get_mut(&view)
                     && st.generation == generation
                 {
-                    st.loading = false;
-                    st.pending = None;
+                    if done {
+                        st.loading = false;
+                        st.pending = None;
+                    }
                     st.result = Some(result);
                 }
             }
@@ -349,6 +354,7 @@ impl KumaApp {
         st.generation += 1;
         st.loading = true;
         st.needs_load = false;
+        st.result = None; // results of the previous query must not show as partial ones
         let generation = st.generation;
         let mut query = st.query.clone();
         query.include_adult = show_adult;
@@ -360,11 +366,20 @@ impl KumaApp {
         );
         let db = self.db.clone();
         let health = self.health.clone();
+        let notify = self.worker.notifier();
         st.pending = Some(self.worker.spawn(async move {
             let result = match cache_read::<Aggregated>(&db, &key, LISTING_TTL) {
                 Some(hit) => hit,
                 None => {
-                    let fresh = search_all(catalogs, query, health).await;
+                    let partial = |result: &Aggregated| {
+                        notify(Msg::Listing {
+                            view,
+                            generation,
+                            result: result.clone(),
+                            done: false,
+                        })
+                    };
+                    let fresh = search_all(catalogs, query, health, partial).await;
                     if fresh.errors.is_empty() {
                         cache_write(&db, &key, "*", &fresh);
                     }
@@ -375,6 +390,7 @@ impl KumaApp {
                 view,
                 generation,
                 result,
+                done: true,
             }
         }));
     }
