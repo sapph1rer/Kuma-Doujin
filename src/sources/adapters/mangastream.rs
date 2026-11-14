@@ -49,11 +49,11 @@ pub fn source(
     })
 }
 
-fn re(p: &str) -> Regex {
+pub(super) fn re(p: &str) -> Regex {
     Regex::new(p).expect("valid regex")
 }
 
-fn unescape(s: &str) -> String {
+pub(super) fn unescape(s: &str) -> String {
     let s = re(r"&#(\d+);").replace_all(s, |c: &regex::Captures| {
         c[1].parse::<u32>()
             .ok()
@@ -69,12 +69,12 @@ fn unescape(s: &str) -> String {
         .to_string()
 }
 
-fn strip_tags(s: &str) -> String {
+pub(super) fn strip_tags(s: &str) -> String {
     unescape(&re(r"<[^>]*>").replace_all(&s.replace("<br />", "\n").replace("</p>", "\n"), ""))
 }
 
 /// First usable image URL of an `<img>` tag, preferring lazy-load attributes over placeholders.
-fn img_url(tag: &str) -> Option<String> {
+pub(super) fn img_url(tag: &str) -> Option<String> {
     ["data-wpfc-original-src", "data-src", "data-lazy-src", "src"]
         .iter()
         .find_map(|a| {

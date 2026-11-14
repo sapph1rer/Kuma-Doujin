@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::Semaphore;
 
+use super::browser::BrowserProcess;
 use super::rate_limiter::RateLimiter;
 use super::retry::{RetryPolicy, with_retry};
 use crate::core::errors::{SourceError, SourceResult};
@@ -26,6 +27,7 @@ pub struct HttpClient {
     limiter: RateLimiter,
     permits: Semaphore,
     retry: RetryPolicy,
+    browser: Option<Arc<BrowserProcess>>,
 }
 
 /// SSRF guard: only `https` URLs whose host equals an allowed host or is a subdomain of it.
@@ -61,7 +63,15 @@ impl HttpClient {
             limiter: RateLimiter::new(rate_limits),
             permits: Semaphore::new(MAX_CONCURRENT),
             retry: RetryPolicy::default(),
+            browser: None,
         })
+    }
+
+    /// Fallback for hosts that answer plain HTTP with 403 (browser checks): pages are loaded in the
+    /// helper browser, and images are fetched with the cookies it earned.
+    pub fn with_browser(mut self, browser: Option<Arc<BrowserProcess>>) -> Self {
+        self.browser = browser;
+        self
     }
 
     /// Replaces the retry policy (e.g. `max_attempts: 1` when the caller retries itself).
@@ -71,15 +81,34 @@ impl HttpClient {
     }
 
     pub async fn get_json<T: DeserializeOwned>(&self, url: &Url) -> SourceResult<T> {
-        let (body, _) = self.get(url, MAX_JSON_BYTES, None, None).await?;
+        let (body, _) = self.get(url, MAX_JSON_BYTES, None, None, None).await?;
         serde_json::from_slice(&body).map_err(|e| SourceError::InvalidResponse(e.to_string()))
     }
 
     /// Fetches an HTML/text page, rejecting non-`text/*` responses and bodies over `max_bytes`.
+    /// On 403 the helper browser (if any) loads it instead.
     pub async fn get_text(&self, url: &str, max_bytes: usize) -> SourceResult<String> {
         let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        let (body, _) = self.get(&url, max_bytes, Some("text/"), None).await?;
-        Ok(String::from_utf8_lossy(&body).into_owned())
+        match self.get(&url, max_bytes, Some("text/"), None, None).await {
+            Ok((body, _)) if !(self.browser.is_some() && is_challenge(&body)) => {
+                Ok(String::from_utf8_lossy(&body).into_owned())
+            }
+            // some hosts answer non-browser clients with a fake 404 instead of 403
+            Ok(_) | Err(SourceError::AccessDenied | SourceError::NotFound) if self.browser.is_some() => {
+                self.check(&url)?;
+                let browser = self.browser.clone().expect("checked");
+                let u = url.to_string();
+                let html = tokio::task::spawn_blocking(move || browser.fetch(&u))
+                    .await
+                    .map_err(|e| SourceError::Network(e.to_string()))?
+                    .map_err(|e| SourceError::Network(format!("{e:#}")))?;
+                if html.len() > max_bytes {
+                    return Err(SourceError::InvalidResponse("response too large".into()));
+                }
+                Ok(html)
+            }
+            r => r.map(|(b, _)| String::from_utf8_lossy(&b).into_owned()),
+        }
     }
 
     /// Fetches an image, rejecting non-`image/*` responses and bodies over `max_bytes`.
@@ -94,7 +123,18 @@ impl HttpClient {
         max_bytes: usize,
     ) -> SourceResult<(Vec<u8>, header::HeaderMap)> {
         let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        self.get(&url, max_bytes, Some("image/"), None).await
+        match self.get(&url, max_bytes, Some("image/"), None, None).await {
+            Err(SourceError::AccessDenied) if self.browser.is_some() => {
+                let browser = self.browser.clone().expect("checked");
+                let u = url.to_string();
+                let auth = tokio::task::spawn_blocking(move || browser.cookies(&u))
+                    .await
+                    .map_err(|e| SourceError::Network(e.to_string()))?
+                    .map_err(|e| SourceError::Network(format!("{e:#}")))?;
+                self.get(&url, max_bytes, Some("image/"), None, Some(&auth)).await
+            }
+            r => r,
+        }
     }
 
     /// POSTs a JSON body once (no retries); used for fire-and-forget telemetry the source requires.
@@ -133,7 +173,7 @@ impl HttpClient {
     ) -> SourceResult<T> {
         let body =
             serde_json::to_value(body).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        let (bytes, _) = self.get(url, MAX_JSON_BYTES, None, Some(&body)).await?;
+        let (bytes, _) = self.get(url, MAX_JSON_BYTES, None, Some(&body), None).await?;
         serde_json::from_slice(&bytes).map_err(|e| SourceError::InvalidResponse(e.to_string()))
     }
 
@@ -144,6 +184,7 @@ impl HttpClient {
         max_bytes: usize,
         mime: Option<&str>,
         json: Option<&serde_json::Value>,
+        auth: Option<&(String, String)>,
     ) -> SourceResult<(Vec<u8>, header::HeaderMap)> {
         self.check(url)?;
         let host = url.host_str().unwrap_or_default();
@@ -154,7 +195,7 @@ impl HttpClient {
                 .await
                 .expect("semaphore never closed");
             self.limiter.acquire(host).await;
-            self.fetch_once(url, max_bytes, mime, json).await
+            self.fetch_once(url, max_bytes, mime, json, auth).await
         })
         .await
     }
@@ -165,11 +206,18 @@ impl HttpClient {
         max_bytes: usize,
         mime: Option<&str>,
         json: Option<&serde_json::Value>,
+        auth: Option<&(String, String)>,
     ) -> SourceResult<(Vec<u8>, header::HeaderMap)> {
-        let req = match json {
+        let mut req = match json {
             Some(body) => self.inner.post(url.clone()).json(body),
             None => self.inner.get(url.clone()),
         };
+        if let Some((cookie, ua)) = auth {
+            req = req
+                .header(header::COOKIE, cookie)
+                .header(header::USER_AGENT, ua)
+                .header(header::REFERER, format!("{}/", url.origin().ascii_serialization()));
+        }
         let mut resp = req.send().await.map_err(net_err)?;
         let status = resp.status();
         if !status.is_success() {
@@ -203,6 +251,12 @@ impl HttpClient {
         }
         Ok((body, headers))
     }
+}
+
+/// A browser-check interstitial served with a 200 status.
+fn is_challenge(body: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&body[..body.len().min(4096)]).to_lowercase();
+    head.contains("<title>just a moment") || head.contains("<title>attention required")
 }
 
 fn net_err(e: reqwest::Error) -> SourceError {
