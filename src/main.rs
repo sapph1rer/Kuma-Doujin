@@ -68,7 +68,11 @@ fn run(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("KumaDoujin")
             .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([800.0, 520.0]),
+            .with_min_inner_size([800.0, 520.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/kuma.png"))
+                    .unwrap_or_default(),
+            ),
         ..Default::default()
     };
     eframe::run_native(

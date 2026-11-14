@@ -10,6 +10,6 @@ pub struct DarkManga;
 
 impl DarkManga {
     pub fn source(http: Arc<HttpClient>) -> anyhow::Result<Source> {
-        super::mangastream::source(http, ID, "Dark Manga", "https://www.dark-manga.com", true)
+        super::mangastream::source(http, ID, "Dark Manga", "https://www.dark-manga.com", false)
     }
 }

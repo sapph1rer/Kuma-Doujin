@@ -14,12 +14,13 @@ pub enum View {
     Search,
     Bookmarks,
     History,
+    Downloads,
     Sources,
     Settings,
 }
 
 impl View {
-    pub const NAV: [View; 9] = [
+    pub const NAV: [View; 10] = [
         View::Home,
         View::Discover,
         View::Popular,
@@ -27,6 +28,7 @@ impl View {
         View::Search,
         View::Bookmarks,
         View::History,
+        View::Downloads,
         View::Sources,
         View::Settings,
     ];
@@ -40,6 +42,7 @@ impl View {
             View::Search => icons::MAGNIFYING_GLASS,
             View::Bookmarks => icons::BOOKMARKS_SIMPLE,
             View::History => icons::CLOCK_COUNTER_CLOCKWISE,
+            View::Downloads => icons::DOWNLOAD_SIMPLE,
             View::Sources => icons::PLUGS,
             View::Settings => icons::GEAR_SIX,
         }
@@ -54,6 +57,7 @@ impl View {
             View::Search => "Search",
             View::Bookmarks => "Bookmarks",
             View::History => "History",
+            View::Downloads => "Downloads",
             View::Sources => "Sources",
             View::Settings => "Settings",
         }

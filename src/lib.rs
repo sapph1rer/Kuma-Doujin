@@ -5,6 +5,7 @@ pub mod cache;
 pub mod core;
 pub mod database;
 pub mod discovery;
+pub mod downloads;
 pub mod network;
 pub mod reader;
 pub mod sources;

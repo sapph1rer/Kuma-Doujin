@@ -190,4 +190,8 @@ impl ImageProvider for DoujinLc {
     async fn page_image(&self, page: &PageRef) -> SourceResult<Vec<u8>> {
         self.http.get_image(&page.token, MAX_IMAGE).await
     }
+
+    fn may_cache_pages(&self) -> bool {
+        true
+    }
 }

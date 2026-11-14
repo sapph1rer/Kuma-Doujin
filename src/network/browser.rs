@@ -116,7 +116,12 @@ impl BrowserProcess {
 
     /// Page HTML after scripts and any browser check have run. Blocking.
     pub fn fetch(&self, url: &str, wait: Option<&str>) -> Result<String> {
-        let v = self.call(json!({"op": "fetch", "url": url, "wait": wait}), Duration::from_secs(95))?;
+        // a selector that never shows up (e.g. an empty result list) should not hold the reader for a minute
+        let timeout = if wait.is_some() { 20 } else { 60 };
+        let v = self.call(
+            json!({"op": "fetch", "url": url, "wait": wait, "timeout": timeout}),
+            Duration::from_secs(timeout + 35),
+        )?;
         let status = v.get("status").and_then(Value::as_u64).unwrap_or(200);
         if status >= 400 {
             bail!("GET {url} (browser) -> HTTP {status}");

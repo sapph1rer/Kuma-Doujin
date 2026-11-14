@@ -263,3 +263,73 @@ mod tests {
         assert_eq!(ago(now, now + 1_000), "just now");
     }
 }
+
+#[derive(Default)]
+pub struct DownloadsAction {
+    pub open: Option<usize>,
+    pub delete: Option<usize>,
+}
+
+/// Offline library: each downloaded work with its cover (`cover_urls[i]`), chapters and size.
+/// `progress` is (chapters in the queue, pages done, pages total).
+pub fn downloads(
+    ui: &mut egui::Ui,
+    entries: &[crate::downloads::Entry],
+    cover_urls: &[Option<String>],
+    (jobs, pages_done, pages_total): (usize, usize, usize),
+    covers: &mut Covers,
+) -> DownloadsAction {
+    let mut out = DownloadsAction::default();
+    heading(ui, "Downloads", "Saved chapters read without a connection");
+    if jobs > 0 {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let frac = if pages_total == 0 { 0.0 } else { pages_done as f32 / pages_total as f32 };
+            ui.label(
+                RichText::new(format!("{} Downloading {jobs} chapter(s)", icons::DOWNLOAD_SIMPLE))
+                    .strong(),
+            );
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .text(format!("{pages_done} / {pages_total} pages"))
+                    .animate(true),
+            );
+        });
+        ui.add_space(12.0);
+    }
+    if entries.is_empty() {
+        empty_state(
+            ui,
+            "Nothing downloaded yet",
+            "Open a title and use the download button beside a chapter, or Download all.",
+        );
+        return out;
+    }
+    const GAP: f32 = 16.0;
+    let cols = (((ui.available_width() + GAP) / (150.0 + GAP)) as usize).max(1);
+    for (row, chunk) in entries.chunks(cols).enumerate() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for (j, e) in chunk.iter().enumerate() {
+                let i = row * cols + j;
+                ui.vertical(|ui| {
+                    let mb = e.size as f64 / (1024.0 * 1024.0);
+                    let sub = format!("{} ch · {mb:.0} MB", e.chapters.len());
+                    let title = e.manga.titles.display();
+                    if card(ui, covers, &e.manga.key.source, cover_urls[i].as_deref(), title, &sub) {
+                        out.open = Some(i);
+                    }
+                    if ui
+                        .small_button(theme::label(icons::TRASH, "Delete"))
+                        .on_hover_text("Remove the downloaded files of this title")
+                        .clicked()
+                    {
+                        out.delete = Some(i);
+                    }
+                });
+            }
+        });
+        ui.add_space(18.0);
+    }
+    out
+}

@@ -12,11 +12,12 @@ use crate::core::models::{Category, Chapter, Manga, MangaKey, PageRef, SortOrder
 use crate::database::Database;
 use crate::database::library::{Bookmark, Favorite, Progress, ResumePoint, now_millis};
 use crate::discovery::aggregator::{Aggregated, CatalogRef, search_all};
+use crate::downloads::{DlStatus, Downloads, Entry, FILE, job_key};
 use crate::reader::engine::{self, ReaderSettings};
 use crate::reader::image_decoder;
 use crate::sources::health::HealthBook;
 use crate::sources::registry::SourceRegistry;
-use crate::ui::browse::{self, Actions, BrowseState, Covers, DetailsState, TagsSlot};
+use crate::ui::browse::{self, Actions, BrowseState, Covers, DetailsState, DlInfo, TagsSlot};
 use crate::ui::library::{self, LibraryAction};
 use crate::ui::reader::{self, PageSlot, ReaderState};
 use crate::ui::{View, icons, theme, views};
@@ -32,6 +33,7 @@ const PAGE_FADE: f64 = 0.22;
 const PAGE_CACHE_MB_KEY: &str = "cache.pages_mb";
 const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
 const DETAILS_TTL: Duration = Duration::from_secs(24 * 3600);
+const CHAPTERS_TTL: Duration = Duration::from_secs(20 * 60);
 const COVER_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 const DEFAULT_PAGE_CACHE_MB: u64 = 1024;
 const PAGE_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -95,7 +97,12 @@ pub enum Msg {
         index: usize,
         result: Result<ColorImage, String>,
     },
+    /// The offline library changed (download finished or deleted).
+    Downloads(Vec<Entry>),
 }
+
+/// Pages fetched at once per chapter download.
+const DOWNLOAD_PARALLEL: usize = 4;
 
 pub struct KumaApp {
     db: Arc<Mutex<Database>>,
@@ -124,6 +131,11 @@ pub struct KumaApp {
     library: Library,
     covers: Covers,
     tags: HashMap<String, TagsSlot>,
+    logo: Option<egui::TextureHandle>,
+    downloads: Arc<Downloads>,
+    downloaded: Vec<Entry>,
+    /// Chapters queued or downloading (by `job_key`); finished ones are removed.
+    dl_status: Arc<Mutex<HashMap<String, DlStatus>>>,
 }
 
 fn cache_read<T: DeserializeOwned>(db: &Mutex<Database>, key: &str, ttl: Duration) -> Option<T> {
@@ -175,6 +187,8 @@ impl KumaApp {
         .into_iter()
         .map(|(v, sort)| (v, BrowseState::new(sort)))
         .collect();
+        let downloads = Downloads::new(data_dir.join("downloads"));
+        let downloaded = downloads.list();
         let page_disk = DiskCache::new(data_dir.join("pages"), page_cache_mb * 1024 * 1024)
             .with_max_age(PAGE_CACHE_MAX_AGE);
         Ok(Self {
@@ -201,6 +215,12 @@ impl KumaApp {
             library,
             covers: Covers::default(),
             tags: HashMap::new(),
+            logo: image_decoder::decode(include_bytes!("../assets/kuma.png"), 512, 512)
+                .ok()
+                .map(|img| cc.egui_ctx.load_texture("logo", img, egui::TextureOptions::LINEAR)),
+            downloads: Arc::new(downloads),
+            downloaded,
+            dl_status: Arc::default(),
         })
     }
 
@@ -294,6 +314,7 @@ impl KumaApp {
                     r.set_page(ctx, index, result);
                 }
             }
+            Msg::Downloads(list) => self.downloaded = list,
         }
     }
 
@@ -302,7 +323,8 @@ impl KumaApp {
         self.registry
             .catalogs()
             .filter(|(info, _)| source.map_or(info.in_discover, |s| s == info.id))
-            .filter(|(info, _)| self.show_adult || !info.adult)
+            // 18+ sources only appear under the Doujin category, and only in 18+ mode
+            .filter(|(info, _)| !info.adult || (self.show_adult && self.category == Category::Doujin))
             .map(|(info, c)| CatalogRef {
                 id: info.id.clone(),
                 name: info.name.clone(),
@@ -316,7 +338,8 @@ impl KumaApp {
             let st = &self.browse[&view];
             self.catalogs_for(st.source.as_deref())
         };
-        let (show_adult, category) = (self.show_adult, self.category);
+        // adult-rated works stay inside the Doujin category so the others are always general
+        let (show_adult, category) = (self.show_adult && self.category == Category::Doujin, self.category);
         let Some(st) = self.browse.get_mut(&view) else {
             return;
         };
@@ -436,7 +459,12 @@ impl KumaApp {
         d.chapters = None;
         let (key, lang) = (d.key.clone(), d.chapter_lang.clone());
         let health = self.health.clone();
+        let db = self.db.clone();
+        let cache_key = format!("chapters:{}:{}:{}", key.source, key.id, lang);
         self.worker.spawn(async move {
+            if let Some(list) = cache_read::<Vec<Chapter>>(&db, &cache_key, CHAPTERS_TTL) {
+                return Msg::Chapters { key, lang, result: Ok(list) };
+            }
             let langs: Vec<String> = (!lang.is_empty())
                 .then(|| lang.clone())
                 .into_iter()
@@ -444,6 +472,9 @@ impl KumaApp {
             let started = Instant::now();
             let res = provider.chapters(&key.id, &langs).await;
             health.record(&key.source, started, &res);
+            if let Ok(list) = &res {
+                cache_write(&db, &cache_key, &key.source, list);
+            }
             let result = res.map_err(|e| e.to_string());
             Msg::Chapters { key, lang, result }
         });
@@ -518,13 +549,6 @@ impl KumaApp {
     /// `start == usize::MAX` opens on the last page (paging backwards into a chapter).
     fn open_chapter(&mut self, index: usize, start: usize) {
         let Some(r) = &mut self.reader else { return };
-        let Some(provider) = self
-            .registry
-            .get(&r.manga.source)
-            .and_then(|s| s.chapters.clone())
-        else {
-            return;
-        };
         let Some(chapter_id) = r.chapters.get(index).map(|c| c.id.clone()) else {
             return;
         };
@@ -533,6 +557,20 @@ impl KumaApp {
         r.generation += 1;
         r.pages = None;
         r.current = start;
+        // a downloaded chapter opens from disk, online or not
+        if let Some(local) = self.downloads.local_pages(&r.manga, &chapter_id) {
+            r.pages = Some(Ok(local));
+            r.jump(start);
+            return;
+        }
+        let Some(provider) = self
+            .registry
+            .get(&r.manga.source)
+            .and_then(|s| s.chapters.clone())
+        else {
+            r.pages = Some(Err("source unavailable".into()));
+            return;
+        };
         let generation = r.generation;
         let (health, source) = (self.health.clone(), r.manga.source.clone());
         self.worker.spawn(async move {
@@ -590,12 +628,9 @@ impl KumaApp {
     fn sync_pages(&mut self, max_side: u32) {
         let Some(r) = &mut self.reader else { return };
         let Some(Ok(pages)) = &r.pages else { return };
-        let Some(source) = self.registry.get(&r.manga.source) else {
-            return;
-        };
-        let Some(images) = source.images.clone() else {
-            return;
-        };
+        let source = self.registry.get(&r.manga.source);
+        let images = source.and_then(|s| s.images.clone());
+        let source_id = r.manga.source.clone();
         let (load, keep) = engine::plan(r.current, &self.reader_settings, pages.len());
         r.slots.retain(|i, slot| {
             let stay = keep.contains(i);
@@ -612,28 +647,35 @@ impl KumaApp {
                 continue;
             }
             let page = pages[index].clone();
+            let local = page.token.strip_prefix(FILE).map(PathBuf::from);
+            if local.is_none() && images.is_none() {
+                continue; // online page but the source is gone
+            }
             let images = images.clone();
             let disk = self.page_disk.clone();
             let generation = r.generation;
-            let cache_key = format!("{}:{}:{}", source.info.id, page.chapter_id, page.token);
-            let (health, source_id) = (self.health.clone(), source.info.id.clone());
+            let cache_key = format!("{}:{}:{}", source_id, page.chapter_id, page.token);
+            let (health, source_id) = (self.health.clone(), source_id.clone());
             let handle = self.worker.spawn(async move {
-                let bytes = match disk.get(&cache_key) {
-                    Some(b) => Ok(b),
-                    None => {
+                let bytes = match (local, images, disk.get(&cache_key)) {
+                    (Some(path), _, _) => tokio::task::spawn_blocking(move || std::fs::read(path))
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| format!("downloaded page missing: {e}"))),
+                    (None, _, Some(b)) => Ok(b),
+                    (None, Some(images), None) => {
                         let started = Instant::now();
                         let res = images.page_image(&page).await;
                         health.record(&source_id, started, &res);
-                        res
+                        res.map_err(|e| e.to_string()).inspect(|b| {
+                            if images.may_cache_pages()
+                                && let Err(e) = disk.put(&cache_key, b)
+                            {
+                                tracing::warn!(error = %e, "page cache write failed");
+                            }
+                        })
                     }
-                    .map_err(|e| e.to_string())
-                    .inspect(|b| {
-                        if images.may_cache_pages()
-                            && let Err(e) = disk.put(&cache_key, b)
-                        {
-                            tracing::warn!(error = %e, "page cache write failed");
-                        }
-                    }),
+                    (None, None, None) => Err("source unavailable".into()),
                 };
                 let result = match bytes {
                     Ok(b) => tokio::task::spawn_blocking(move || {
@@ -653,7 +695,116 @@ impl KumaApp {
         }
     }
 
+    /// Queues chapters (indices into the open details page's list) for offline reading.
+    fn download(&mut self, indices: Vec<usize>) {
+        let Some(d) = &self.details else { return };
+        let (Some(Ok(manga)), Some(Ok(chapters))) = (&d.result, &d.chapters) else {
+            return;
+        };
+        let Some(src) = self.registry.get(&d.key.source) else { return };
+        let (Some(provider), Some(images), catalog) =
+            (src.chapters.clone(), src.images.clone(), src.catalog.clone())
+        else {
+            return;
+        };
+        let have = self.downloaded.iter().find(|e| e.manga.key == d.key);
+        let mut status = self.dl_status.lock().expect("download status lock");
+        let todo: Vec<Chapter> = indices
+            .into_iter()
+            .filter_map(|i| chapters.get(i))
+            .filter(|c| !have.is_some_and(|e| e.has(&c.id)))
+            .filter(|c| {
+                !matches!(
+                    status.get(&job_key(&d.key, &c.id)),
+                    Some(DlStatus::Queued | DlStatus::Running { .. })
+                )
+            })
+            .cloned()
+            .collect();
+        for c in &todo {
+            status.insert(job_key(&d.key, &c.id), DlStatus::Queued);
+        }
+        drop(status);
+        if todo.is_empty() {
+            return;
+        }
+        let (manga, all) = (manga.clone(), chapters.clone());
+        let (store, status) = (self.downloads.clone(), self.dl_status.clone());
+        self.worker.spawn(async move {
+            let cover_file = store.cover_path(&manga.key);
+            if let (Some(url), Some(catalog)) = (&manga.cover_url, catalog)
+                && !cover_file.exists()
+                && let Ok(bytes) = catalog.cover(url).await
+            {
+                if let Some(dir) = cover_file.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(&cover_file, bytes);
+            }
+            for c in todo {
+                let key = job_key(&manga.key, &c.id);
+                let set = |s: DlStatus| {
+                    if let Ok(mut m) = status.lock() {
+                        m.insert(key.clone(), s);
+                    }
+                };
+                set(DlStatus::Running { done: 0, total: 0 });
+                let res = download_chapter(&store, &manga.key, &c, &*provider, &images, &set).await;
+                match res.and_then(|n| {
+                    store.record(&manga, &all, &c, n).map_err(|e| e.to_string())
+                }) {
+                    Ok(()) => {
+                        if let Ok(mut m) = status.lock() {
+                            m.remove(&key);
+                        }
+                    }
+                    Err(e) => set(DlStatus::Failed(e)),
+                }
+            }
+            let list = tokio::task::spawn_blocking(move || store.list()).await.unwrap_or_default();
+            Msg::Downloads(list)
+        });
+    }
+
+    /// Shows a downloaded work from disk, without asking the source.
+    fn open_offline(&mut self, entry: &Entry) {
+        self.details = Some(DetailsState {
+            key: entry.manga.key.clone(),
+            result: Some(Ok(entry.manga.clone())),
+            chapters: Some(Ok(entry.chapters.iter().map(|c| c.chapter.clone()).collect())),
+            chapter_lang: String::new(),
+        });
+    }
+
+    fn delete_download(&mut self, key: MangaKey) {
+        let store = self.downloads.clone();
+        self.worker.spawn(async move {
+            let list = tokio::task::spawn_blocking(move || {
+                if let Err(e) = store.remove(&key) {
+                    tracing::error!(error = %e, "deleting download failed");
+                }
+                store.list()
+            })
+            .await
+            .unwrap_or_default();
+            Msg::Downloads(list)
+        });
+    }
+
     fn load_cover(&self, source: String, url: String) {
+        if let Some(path) = url.strip_prefix(FILE).map(PathBuf::from) {
+            self.worker.spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    std::fs::read(path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| image_decoder::decode(&b, MAX_COVER_DIM, MAX_COVER_DIM))
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+                Msg::Cover { url, result }
+            });
+            return;
+        }
         let Some(catalog) = self.registry.get(&source).and_then(|s| s.catalog.clone()) else {
             return;
         };
@@ -704,7 +855,13 @@ impl KumaApp {
     fn set_adult(&mut self, on: bool) {
         self.show_adult = on;
         self.save_setting(SHOW_ADULT_KEY, on.to_string());
-        self.browse.values_mut().for_each(|b| b.needs_load = true);
+        if !on && self.category == Category::Doujin {
+            self.set_category(Category::All);
+        }
+        self.browse.values_mut().for_each(|b| {
+            b.needs_load = true;
+            b.source = None; // a picked 18+ source may now be hidden
+        });
     }
 
     fn age_modal(&mut self, ctx: &egui::Context) {
@@ -792,16 +949,19 @@ impl KumaApp {
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(icons::BOOK_BOOKMARK)
-                    .size(26.0)
-                    .color(theme::ACCENT),
-            );
+            match &self.logo {
+                Some(t) => {
+                    ui.add(egui::Image::new((t.id(), egui::vec2(34.0, 34.0))).corner_radius(8));
+                }
+                None => {
+                    ui.label(RichText::new(icons::BOOK_BOOKMARK).size(26.0).color(theme::ACCENT));
+                }
+            }
             ui.label(RichText::new("KumaDoujin").size(20.0).strong());
         });
         ui.add_space(18.0);
         for (i, view) in View::NAV.into_iter().enumerate() {
-            if i == 5 || i == 7 {
+            if i == 5 || i == 8 {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
@@ -819,7 +979,20 @@ impl KumaApp {
         let Some(d) = &mut self.details else { return };
         let favorite = self.library.favorites.iter().any(|f| f.key == d.key);
         let progress = self.library.recent.iter().find(|p| p.at.key == d.key);
-        let a = browse::details(ui, d, &self.registry, &mut self.covers, favorite, progress);
+        let prefix = job_key(&d.key, "");
+        let dl = DlInfo {
+            saved: self.downloaded.iter().find(|e| e.manga.key == d.key),
+            status: self
+                .dl_status
+                .lock()
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, s)| Some((k.strip_prefix(&prefix)?.to_string(), s.clone())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let a = browse::details(ui, d, &self.registry, &mut self.covers, favorite, progress, &dl);
         let fav = match &d.result {
             Some(Ok(m)) if a.toggle_favorite => Some(Favorite {
                 key: d.key.clone(),
@@ -842,6 +1015,9 @@ impl KumaApp {
             self.resume(at);
         } else if let Some(i) = a.read {
             self.open_reader(i, 0);
+        }
+        if !a.download.is_empty() {
+            self.download(a.download);
         }
         if a.back {
             self.details = None;
@@ -868,6 +1044,9 @@ impl KumaApp {
         ) {
             ui.horizontal_wrapped(|ui| {
                 for c in Category::ALL {
+                    if c == Category::Doujin && !self.show_adult {
+                        continue;
+                    }
                     if theme::pill(ui, &category_label(c), c == self.category).clicked()
                         && c != self.category
                     {
@@ -920,7 +1099,7 @@ impl KumaApp {
                     reg,
                     &self.tags,
                     &mut self.covers,
-                    self.show_adult,
+                    self.show_adult && self.category == Category::Doujin,
                 )
             }
             View::Bookmarks => {
@@ -939,8 +1118,37 @@ impl KumaApp {
                 self.library_action(a);
                 Actions::default()
             }
+            View::Downloads => {
+                let covers: Vec<Option<String>> = self
+                    .downloaded
+                    .iter()
+                    .map(|e| {
+                        let file = self.downloads.cover_path(&e.manga.key);
+                        if file.exists() {
+                            Some(format!("{FILE}{}", file.display()))
+                        } else {
+                            e.manga.cover_url.clone()
+                        }
+                    })
+                    .collect();
+                let progress = self.dl_status.lock().map_or((0, 0, 0), |m| {
+                    m.values().fold((0, 0, 0), |(j, d, t), s| match s {
+                        DlStatus::Queued => (j + 1, d, t),
+                        DlStatus::Running { done, total } => (j + 1, d + done, t + total),
+                        DlStatus::Failed(_) => (j, d, t),
+                    })
+                });
+                let a = library::downloads(ui, &self.downloaded, &covers, progress, &mut self.covers);
+                if let Some(e) = a.open.and_then(|i| self.downloaded.get(i).cloned()) {
+                    self.open_offline(&e);
+                }
+                if let Some(key) = a.delete.and_then(|i| self.downloaded.get(i)).map(|e| e.manga.key.clone()) {
+                    self.delete_download(key);
+                }
+                Actions::default()
+            }
             View::Sources => {
-                if let Some((id, on)) = views::sources(ui, reg, &self.health) {
+                if let Some((id, on)) = views::sources(ui, reg, &self.health, self.show_adult) {
                     self.registry.set_enabled(&id, on);
                     self.db_job(false, move |db| db.set_source_enabled(&id, on));
                     self.browse.values_mut().for_each(|b| {
@@ -952,7 +1160,18 @@ impl KumaApp {
             }
             View::Settings => {
                 let mut adult = self.show_adult;
-                let s = views::settings(ui, &self.data_dir, &mut adult, &mut self.page_cache_mb);
+                let s = views::settings(
+                    ui,
+                    &self.data_dir,
+                    &mut adult,
+                    &mut self.page_cache_mb,
+                    &mut self.reader_settings,
+                );
+                if s.reader_changed
+                    && let Ok(json) = serde_json::to_string(&self.reader_settings)
+                {
+                    self.save_setting(READER_SETTINGS_KEY, json);
+                }
                 if s.adult_changed {
                     self.request_adult(adult);
                 }
@@ -1022,6 +1241,13 @@ impl KumaApp {
 
 impl eframe::App for KumaApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let busy = self
+            .dl_status
+            .lock()
+            .is_ok_and(|m| m.values().any(|s| !matches!(s, DlStatus::Failed(_))));
+        if busy {
+            ui.ctx().request_repaint_after(Duration::from_millis(300)); // download progress
+        }
         let msgs: Vec<Msg> = self.worker.drain().collect();
         for msg in msgs {
             self.handle(ui.ctx(), msg);
@@ -1105,4 +1331,44 @@ fn category_label(c: Category) -> String {
         Category::Manhua => icons::BOOK_BOOKMARK,
     };
     format!("{icon}  {}", c.label())
+}
+
+/// Fetches every page of `chapter` into its folder; pages already on disk are kept (resume).
+/// Returns the page count.
+async fn download_chapter(
+    store: &Downloads,
+    key: &MangaKey,
+    chapter: &Chapter,
+    provider: &dyn crate::sources::traits::ChapterProvider,
+    images: &Arc<dyn crate::sources::traits::ImageProvider>,
+    set: &impl Fn(DlStatus),
+) -> Result<usize, String> {
+    let pages = provider.pages(&chapter.id).await.map_err(|e| e.to_string())?;
+    let total = pages.len();
+    std::fs::create_dir_all(store.chapter_dir(key, &chapter.id)).map_err(|e| e.to_string())?;
+    let mut done = 0;
+    for batch in pages.chunks(DOWNLOAD_PARALLEL) {
+        let mut set_ = tokio::task::JoinSet::new();
+        for page in batch {
+            let path = store.page_path(key, &chapter.id, page.index as usize);
+            if path.exists() {
+                continue;
+            }
+            let (page, images) = (page.clone(), images.clone());
+            set_.spawn(async move {
+                let bytes = images.page_image(&page).await.map_err(|e| e.to_string())?;
+                // write-then-rename: a cancelled download never leaves a truncated page behind
+                let tmp = path.with_extension("part");
+                std::fs::write(&tmp, bytes)
+                    .and_then(|_| std::fs::rename(&tmp, &path))
+                    .map_err(|e| e.to_string())
+            });
+        }
+        while let Some(r) = set_.join_next().await {
+            r.map_err(|e| e.to_string())??;
+        }
+        done += batch.len();
+        set(DlStatus::Running { done, total });
+    }
+    Ok(total)
 }

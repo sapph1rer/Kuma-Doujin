@@ -43,6 +43,9 @@ pub struct ReaderState {
     last_activity: f64,
     scroll_to: Option<usize>,
     fullscreen: bool,
+    /// Vertical layout: current scroll offset, and whether auto-scroll is running.
+    offset: f32,
+    pub auto_scroll: bool,
 }
 
 #[derive(Default)]
@@ -84,6 +87,8 @@ impl ReaderState {
             last_activity: 0.0,
             scroll_to: Some(0),
             fullscreen: false,
+            offset: 0.0,
+            auto_scroll: false,
         }
     }
 
@@ -248,6 +253,9 @@ fn keyboard(ctx: &egui::Context, st: &mut ReaderState, s: &mut ReaderSettings) -
     if pressed(Key::B) {
         a.bookmark = true;
     }
+    if pressed(Key::A) && !paged {
+        st.auto_scroll = !st.auto_scroll;
+    }
     if pressed(Key::T) {
         s.toolbar_collapsed = !s.toolbar_collapsed;
         a.settings_changed = true;
@@ -349,6 +357,7 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderA
 
 fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> ReaderAction {
     let total = st.page_count();
+    let gap = s.page_gap.max(0.0);
     let avail = ui.available_size();
     let width = match s.fit {
         Fit::Width => avail.x,
@@ -365,7 +374,7 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
         .iter()
         .scan(0.0, |y, h| {
             let top = *y;
-            *y += h + 4.0;
+            *y += h + gap;
             Some(top)
         })
         .collect();
@@ -374,13 +383,37 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
     let mut area = egui::ScrollArea::vertical()
         .id_salt(("vertical", st.generation))
         .auto_shrink(false);
+    // Extra scrolling on top of egui's own: speed multiplier, held arrow keys, auto-scroll.
+    let (wheel, dt, down, up) = ui.input(|i| {
+        (i.smooth_scroll_delta.y, i.stable_dt.min(0.1), i.key_down(Key::ArrowDown), i.key_down(Key::ArrowUp))
+    });
+    let mut extra = -wheel * (s.scroll_speed - 1.0);
+    let key_speed = 900.0 * s.scroll_speed * dt;
+    if down {
+        extra += key_speed;
+    }
+    if up {
+        extra -= key_speed;
+    }
+    if st.auto_scroll {
+        extra += s.auto_scroll_speed * dt;
+        ui.ctx().request_repaint();
+        if st.offset + 1.0 >= full_height - avail.y {
+            st.auto_scroll = false; // reached the end of the chapter
+        }
+    }
+    if down || up {
+        ui.ctx().request_repaint();
+    }
     if let Some(i) = st.scroll_to.take()
         && i < tops.len()
     {
         area = area.vertical_scroll_offset(tops[i]);
+    } else if extra != 0.0 {
+        area = area.vertical_scroll_offset((st.offset + extra).max(0.0));
     }
     let mut action = ReaderAction::default();
-    area.show_viewport(ui, |ui, viewport| {
+    let out = area.show_viewport(ui, |ui, viewport| {
         ui.set_height(full_height);
         let origin = ui.min_rect().min;
         let left = origin.x + (avail.x - width).max(0.0) / 2.0;
@@ -411,6 +444,7 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &ReaderSettings) -> Read
             }
         }
     });
+    st.offset = out.state.clamped_offset().y;
     action
 }
 
@@ -550,7 +584,19 @@ fn controls(
                         {
                             st.zoom = (st.zoom * 1.15).min(5.0);
                         }
+                        if s.layout == Layout::Vertical {
+                            let label = if st.auto_scroll {
+                                theme::label(icons::PAUSE, "Auto").color(theme::ACCENT)
+                            } else {
+                                theme::label(icons::PLAY, "Auto")
+                            };
+                            if ui.button(label).on_hover_text("Auto-scroll (A)").clicked() {
+                                st.auto_scroll = !st.auto_scroll;
+                            }
+                        }
                         ui.menu_button(icons::GEAR_SIX, |ui| {
+                            reader_sliders(ui, s);
+                            ui.separator();
                             ui.add(egui::Slider::new(&mut s.preload, 1..=8).text("Preload pages"));
                             ui.add(
                                 egui::Slider::new(&mut s.keep_in_memory, 2..=30)
@@ -642,4 +688,22 @@ fn toolbar_handle(ctx: &egui::Context, s: &mut ReaderSettings, action: &mut Read
                 action.settings_changed = true;
             }
         });
+}
+
+/// Scrolling sliders shared by the reader toolbar and the Settings page.
+pub fn reader_sliders(ui: &mut egui::Ui, s: &mut ReaderSettings) {
+    ui.add(
+        egui::Slider::new(&mut s.scroll_speed, 0.25..=4.0)
+            .step_by(0.05)
+            .suffix("×")
+            .text("Scroll speed"),
+    )
+    .on_hover_text("Mouse wheel and arrow keys in the vertical layout");
+    ui.add(
+        egui::Slider::new(&mut s.auto_scroll_speed, 20.0..=800.0)
+            .logarithmic(true)
+            .suffix(" px/s")
+            .text("Auto-scroll speed"),
+    );
+    ui.add(egui::Slider::new(&mut s.page_gap, 0.0..=40.0).suffix(" px").text("Gap between pages"));
 }

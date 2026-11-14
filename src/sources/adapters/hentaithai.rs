@@ -50,10 +50,12 @@ impl HentaiThai {
     }
 
     fn cards(html: &str) -> Vec<MangaSummary> {
-        // each card's cover is a `.post_N { background-image: url('…') }` rule in a <style> before it
-        let covers: HashMap<String, String> = re(r"\.post_(\d+)\s*\{\s*background-image:\s*url\('([^']+)'\)")
-            .captures_iter(html)
-            .map(|c| (c[1].to_string(), c[2].to_string()))
+        // each card's cover is a `.post_N { background-image: url(thai), url(clean) }` rule; the
+        // Thai layer is only the translated text on a transparent background, so the clean page is used
+        let covers: HashMap<String, String> =
+            re(r"\.post_(\d+)\s*\{\s*background-image:\s*url\('[^']+'\),\s*url\('([^']+)'\)")
+                .captures_iter(html)
+                .map(|c| (c[1].to_string(), c[2].to_string()))
             .collect();
         re(r#"(?s)<a [^>]*href="/t(\d+)" title="([^"]*)"[^>]*>\s*<div class="embed-responsive post_(\d+)"#)
             .captures_iter(html)
@@ -121,7 +123,7 @@ impl CatalogProvider for HentaiThai {
             .captures_iter(&html)
             .map(|c| strip_tags(&c[1]))
             .collect();
-        let cover_url = re(r#"data-layer="([^"]+)""#).captures(&html).map(|c| c[1].to_string());
+        let cover_url = re(r#"<img src="([^"]+)" data-layer="#).captures(&html).map(|c| c[1].to_string());
         Ok(Manga {
             key: MangaKey { source: ID.into(), id: id.into() },
             titles: Titles { thai: Some(thai), english, ..Default::default() },
@@ -163,10 +165,10 @@ impl ChapterProvider for HentaiThai {
 
     async fn pages(&self, chapter_id: &str) -> SourceResult<Vec<PageRef>> {
         let html = self.html(&format!("{BASE}/t{chapter_id}")).await?;
-        // `data-layer` is the Thai-translated page laid over the untranslated `clean` one
+        // each page is the untranslated `clean` image with a transparent Thai text layer on top
         let urls: Vec<String> = re(r#"<img src="([^"]+)" data-layer="([^"]+)""#)
             .captures_iter(&html)
-            .map(|c| c[2].to_string())
+            .map(|c| format!("{}\n{}", &c[1], &c[2]))
             .collect();
         if urls.is_empty() {
             return Err(SourceError::InvalidResponse("no pages found".into()));
@@ -182,6 +184,59 @@ impl ChapterProvider for HentaiThai {
 #[async_trait]
 impl ImageProvider for HentaiThai {
     async fn page_image(&self, page: &PageRef) -> SourceResult<Vec<u8>> {
-        self.http.get_image(&page.token, MAX_IMAGE).await
+        let (clean, layer) = page.token.split_once('\n').unwrap_or((&page.token, ""));
+        let base = self.http.get_image(clean, MAX_IMAGE).await?;
+        if layer.is_empty() {
+            return Ok(base);
+        }
+        let Ok(text) = self.http.get_image(layer, MAX_IMAGE).await else {
+            return Ok(base); // untranslated page beats no page
+        };
+        tokio::task::spawn_blocking(move || composite(&base, &text))
+            .await
+            .map_err(|e| SourceError::InvalidResponse(e.to_string()))?
+    }
+
+    fn may_cache_pages(&self) -> bool {
+        true
+    }
+}
+
+/// Draws the transparent text layer over the page and re-encodes it as JPEG.
+fn composite(base: &[u8], layer: &[u8]) -> SourceResult<Vec<u8>> {
+    let err = |e: image::ImageError| SourceError::InvalidResponse(e.to_string());
+    let mut page = image::load_from_memory(base).map_err(err)?.to_rgba8();
+    let mut text = image::load_from_memory(layer).map_err(err)?.to_rgba8();
+    if text.dimensions() != page.dimensions() {
+        let (w, h) = page.dimensions();
+        text = image::imageops::resize(&text, w, h, image::imageops::FilterType::Triangle);
+    }
+    image::imageops::overlay(&mut page, &text, 0, 0);
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(page)
+        .to_rgb8()
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90))
+        .map_err(err)?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composite_puts_text_layer_over_page() {
+        let png = |img: image::RgbaImage| {
+            let mut b = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+            b.into_inner()
+        };
+        let page = png(image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 255, 255, 255])));
+        let mut layer = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 0]));
+        layer.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        let out = image::load_from_memory(&composite(&page, &png(layer)).unwrap()).unwrap().to_rgb8();
+        assert_eq!(out.dimensions(), (4, 4));
+        assert!(out.get_pixel(0, 0)[0] < 100, "text pixel drawn");
+        assert!(out.get_pixel(3, 3)[0] > 200, "page shows through transparent layer");
     }
 }

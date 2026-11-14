@@ -4,6 +4,7 @@
 use eframe::egui::{self, RichText};
 
 use super::{icons, theme};
+use crate::reader::engine::{Fit, Layout, ReaderSettings};
 use crate::sources::health::{HealthBook, Status};
 use crate::sources::registry::SourceRegistry;
 use crate::sources::traits::AccessLevel;
@@ -32,13 +33,22 @@ pub fn sources(
     ui: &mut egui::Ui,
     registry: &SourceRegistry,
     health: &HealthBook,
+    show_adult: bool,
 ) -> Option<(String, bool)> {
     let mut toggled = None;
     heading(ui, "Sources", "Connected content providers");
     if registry.all().is_empty() {
         empty_state(ui, "No sources registered", NO_CATALOG);
     }
-    for s in registry.all() {
+    let hidden = registry.all().iter().filter(|s| s.info.adult && !show_adult).count();
+    if hidden > 0 {
+        empty_state(
+            ui,
+            &format!("{hidden} 18+ sources hidden"),
+            "Turn on 18+ mode in Settings to see and use them (Doujin 18+ category).",
+        );
+    }
+    for s in registry.all().iter().filter(|s| !s.info.adult || show_adult) {
         theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -121,6 +131,7 @@ pub struct SettingsActions {
     pub adult_changed: bool,
     pub clear_caches: bool,
     pub page_cache_changed: bool,
+    pub reader_changed: bool,
 }
 
 pub fn settings(
@@ -128,14 +139,54 @@ pub fn settings(
     data_dir: &std::path::Path,
     show_adult: &mut bool,
     page_cache_mb: &mut u64,
+    reader: &mut ReaderSettings,
 ) -> SettingsActions {
     heading(ui, "Settings", "Preferences are stored locally");
     let mut out = SettingsActions::default();
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
+        ui.label(RichText::new("Reader").strong().size(16.0));
+        let before = reader.clone();
+        ui.horizontal(|ui| {
+            ui.label("Default layout");
+            for (l, name) in [
+                (Layout::Single, "Single page"),
+                (Layout::Double, "Two pages"),
+                (Layout::Vertical, "Vertical scroll (webtoon)"),
+            ] {
+                ui.selectable_value(&mut reader.layout, l, name);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Page fit");
+            ui.selectable_value(&mut reader.fit, Fit::Width, "Width");
+            ui.selectable_value(&mut reader.fit, Fit::Height, "Height");
+            ui.selectable_value(&mut reader.fit, Fit::Original, "Original");
+        });
+        ui.checkbox(&mut reader.rtl, "Right-to-left page order (Japanese manga)");
+        super::reader::reader_sliders(ui, reader);
+        ui.add(egui::Slider::new(&mut reader.preload, 1..=8).text("Pages to preload ahead"));
+        ui.label(
+            RichText::new("Keys: Space/PageDown next · arrows scroll · A auto-scroll · B bookmark · F fullscreen · T toolbar")
+                .small()
+                .color(theme::MUTED),
+        );
+        out.reader_changed = *reader != before;
+    });
+    ui.add_space(12.0);
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Content").strong().size(16.0));
         out.adult_changed = ui
-            .checkbox(show_adult, "Show adult (18+) content")
+            .checkbox(show_adult, "18+ mode")
             .changed();
+        ui.label(
+            RichText::new(
+                "Off: only general manga, manhwa and manhua; 18+ sources are hidden everywhere.                  On: adds the Doujin 18+ category, the only place adult works appear.",
+            )
+            .small()
+            .color(theme::MUTED),
+        );
         ui.add_space(8.0);
         let slider = egui::Slider::new(page_cache_mb, 256..=8192)
             .logarithmic(true)

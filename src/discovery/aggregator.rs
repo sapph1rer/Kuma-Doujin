@@ -24,6 +24,9 @@ pub struct Aggregated {
     pub errors: Vec<(String, String)>,
 }
 
+/// A source that has not answered by then is reported as an error; the others still show.
+const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
 pub async fn search_all(
     catalogs: Vec<CatalogRef>,
     query: SearchQuery,
@@ -35,7 +38,9 @@ pub async fn search_all(
             let (q, health) = (query.clone(), health.clone());
             let task = tokio::spawn(async move {
                 let started = std::time::Instant::now();
-                let res = c.provider.search(&q).await;
+                let res = tokio::time::timeout(SOURCE_TIMEOUT, c.provider.search(&q))
+                    .await
+                    .unwrap_or_else(|_| Err(crate::core::errors::SourceError::Network("timed out".into())));
                 health.record(&c.id, started, &res);
                 res
             });
@@ -59,7 +64,46 @@ pub async fn search_all(
     while !lists.is_empty() {
         lists.retain_mut(|it| it.next().map(|m| out.items.push(m)).is_some());
     }
+    if !query.text.trim().is_empty() {
+        // best title matches first; the sort is stable, so equal scores keep the round-robin order
+        let words = words(&query.text);
+        out.items.sort_by_key(|m| std::cmp::Reverse(relevance(&words, m)));
+    }
     out
+}
+
+fn words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Higher is better: exact title, then prefix, then every word present, then some words.
+fn relevance(query: &[String], m: &MangaSummary) -> u32 {
+    let t = &m.titles;
+    [&t.english, &t.japanese, &t.thai]
+        .into_iter()
+        .flatten()
+        .chain(&t.alternatives)
+        .map(|title| {
+            let title_words = words(title);
+            let joined = title_words.join(" ");
+            let q = query.join(" ");
+            let hits = query.iter().filter(|w| title_words.iter().any(|t| t.starts_with(*w))).count() as u32;
+            if joined == q {
+                1000
+            } else if joined.starts_with(&q) {
+                500 + hits
+            } else if hits as usize == query.len() {
+                200 + hits
+            } else {
+                hits * 10
+            }
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -100,6 +144,22 @@ mod tests {
         async fn cover(&self, _: &str) -> SourceResult<Vec<u8>> {
             Err(SourceError::NotFound)
         }
+    }
+
+    #[test]
+    fn relevance_prefers_exact_then_prefix_then_all_words() {
+        let m = |title: &str| MangaSummary {
+            key: MangaKey { source: "s".into(), id: title.into() },
+            titles: Titles { english: Some(title.into()), ..Default::default() },
+            cover_url: None,
+            language: None,
+        };
+        let q = words("solo leveling");
+        let exact = relevance(&q, &m("Solo Leveling"));
+        let prefix = relevance(&q, &m("Solo Leveling: Ragnarok"));
+        let all = relevance(&q, &m("The Leveling of Solo Heroes"));
+        let some = relevance(&q, &m("Solo Camping"));
+        assert!(exact > prefix && prefix > all && all > some && some > 0);
     }
 
     #[tokio::test]

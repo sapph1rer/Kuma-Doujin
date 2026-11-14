@@ -44,7 +44,8 @@ impl Kairew {
 impl CatalogProvider for Kairew {
     /// The site's front listing only (no paging or server-side search is used); text filters it.
     async fn search(&self, q: &SearchQuery) -> SourceResult<Paged<MangaSummary>> {
-        if q.page > 1 {
+        // the front listing mixes formats and has no 18+ section: show it under All only
+        if q.page > 1 || q.category != crate::core::models::Category::All {
             return Ok(Paged { items: vec![], page: q.page, has_more: false });
         }
         let html = self

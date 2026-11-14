@@ -62,7 +62,17 @@ impl CatalogProvider for MikuDoujin {
             )
         }
         .map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        let html = self.html(url.as_str()).await?;
+        // search results render client-side; an empty search never shows a card, so it times out
+        let html = if q.text.is_empty() {
+            self.html(url.as_str()).await?
+        } else {
+            match self.http.get_text_waiting(url.as_str(), MAX_HTML, Some("a.inz-a")).await {
+                Err(SourceError::Network(e)) if e.contains("timed out waiting") => {
+                    return Ok(Paged { items: vec![], page: q.page, has_more: false });
+                }
+                r => r?,
+            }
+        };
 
         let card = re(
             r#"(?s)class="no-underline inz-a" href="https://miku-doujin.com/([^/"]+)/">\s*(<img[^>]*>).*?class="inz-title[^"]*">(.*?)</div>"#,
@@ -170,5 +180,9 @@ impl ChapterProvider for MikuDoujin {
 impl ImageProvider for MikuDoujin {
     async fn page_image(&self, page: &PageRef) -> SourceResult<Vec<u8>> {
         self.http.get_image(&page.token, MAX_IMAGE).await
+    }
+
+    fn may_cache_pages(&self) -> bool {
+        true
     }
 }

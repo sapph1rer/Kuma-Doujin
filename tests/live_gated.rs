@@ -32,6 +32,9 @@ async fn walk(s: Source, search_word: &str) {
     println!("  pages: {}", pages.len());
     let bytes = img.page_image(&pages[0]).await.unwrap();
     println!("  page0 bytes: {}", bytes.len());
+    if let Ok(dir) = std::env::var("DUMP_PAGE") {
+        std::fs::write(format!("{dir}/{}.jpg", name.replace(' ', "_")), &bytes).unwrap();
+    }
     let sq = SearchQuery { page: 1, text: search_word.into(), ..Default::default() };
     println!("  search '{}': {} items", sq.text, cat.search(&sq).await.unwrap().items.len());
 }
@@ -47,7 +50,7 @@ async fn live() {
     );
     walk(HentaiThai::source(http.clone()).unwrap(), "sekitsui").await;
     walk(DoujinLc::source(http.clone()).unwrap(), "wife").await;
-    walk(MikuDoujin::source(http.clone()).unwrap(), "mother").await;
+    walk(MikuDoujin::source(http.clone()).unwrap(), "Zen").await;
 
     let k = Kairew::source(http).unwrap().catalog.unwrap();
     let list = k.search(&SearchQuery { page: 1, ..Default::default() }).await.unwrap();

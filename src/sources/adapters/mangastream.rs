@@ -8,7 +8,7 @@ use reqwest::Url;
 
 use crate::core::errors::{SourceError, SourceResult};
 use crate::core::models::{
-    Chapter, Manga, MangaKey, MangaSummary, PageRef, Paged, SearchQuery, SortOrder, Titles,
+    Category, Chapter, Manga, MangaKey, MangaSummary, PageRef, Paged, SearchQuery, SortOrder, Titles,
 };
 use crate::network::client::HttpClient;
 use crate::sources::registry::Source;
@@ -107,10 +107,22 @@ impl CatalogProvider for MangaStream {
             SortOrder::Relevance if q.text.is_empty() => "popular",
             SortOrder::Relevance => "",
         };
+        let kind = match q.category {
+            Category::Doujin => return Ok(Paged { items: vec![], page: q.page, has_more: false }),
+            Category::Manga => "manga",
+            Category::Manhwa => "manhwa",
+            Category::Manhua => "manhua",
+            Category::All => "",
+        };
         let page = q.page.max(1).to_string();
         let url = Url::parse_with_params(
             &format!("{}/manga/", self.base),
-            [("page", page.as_str()), ("order", order), ("title", q.text.as_str())],
+            [
+                ("page", page.as_str()),
+                ("order", order),
+                ("title", q.text.as_str()),
+                ("type", kind),
+            ],
         )
         .map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
         let html = self.html(url.as_str()).await?;
@@ -250,5 +262,9 @@ impl ChapterProvider for MangaStream {
 impl ImageProvider for MangaStream {
     async fn page_image(&self, page: &PageRef) -> SourceResult<Vec<u8>> {
         self.http.get_image(&page.token, MAX_IMAGE).await
+    }
+
+    fn may_cache_pages(&self) -> bool {
+        true
     }
 }

@@ -32,6 +32,12 @@ pub struct ReaderSettings {
     pub keep_in_memory: usize,
     /// Reader toolbar folded into a small tab (toggle with T).
     pub toolbar_collapsed: bool,
+    /// Multiplier for mouse-wheel and arrow-key scrolling in the vertical layout.
+    pub scroll_speed: f32,
+    /// Auto-scroll speed in points per second (vertical layout, toggle with A).
+    pub auto_scroll_speed: f32,
+    /// Gap between pages in the vertical layout, in points.
+    pub page_gap: f32,
 }
 
 impl Default for ReaderSettings {
@@ -43,6 +49,9 @@ impl Default for ReaderSettings {
             preload: 3,
             keep_in_memory: 10,
             toolbar_collapsed: false,
+            scroll_speed: 1.0,
+            auto_scroll_speed: 120.0,
+            page_gap: 4.0,
         }
     }
 }

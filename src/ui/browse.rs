@@ -14,6 +14,7 @@ use super::{icons, theme};
 use crate::core::models::{Chapter, Manga, MangaKey, MangaSummary, SearchQuery, SortOrder, Tag};
 use crate::database::library::{Progress, ResumePoint};
 use crate::discovery::aggregator::Aggregated;
+use crate::downloads::{DlStatus, Entry};
 use crate::sources::registry::SourceRegistry;
 
 const CARD: Vec2 = vec2(150.0, 214.0);
@@ -264,7 +265,8 @@ pub fn browse(
     reg: &SourceRegistry,
     tags: &HashMap<String, TagsSlot>,
     covers: &mut Covers,
-    show_adult: bool,
+    // 18+ sources are listed only in the Doujin category with 18+ mode on
+    adult_sources: bool,
 ) -> Actions {
     let mut actions = Actions::default();
     theme::hero(ui, title, subtitle);
@@ -287,14 +289,6 @@ pub fn browse(
                 .clicked();
 
         let before = (st.query.sort, st.query.languages.clone(), st.source.clone());
-        let mut adult = show_adult;
-        if ui
-            .checkbox(&mut adult, "18+")
-            .on_hover_text("Include adult content")
-            .changed()
-        {
-            actions.set_adult = Some(adult);
-        }
         egui::ComboBox::from_id_salt("sort")
             .selected_text(match st.query.sort {
                 SortOrder::Relevance => "Relevance",
@@ -335,7 +329,7 @@ pub fn browse(
             .selected_text(src_label)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut st.source, None, "All sources");
-                for (info, _) in reg.catalogs() {
+                for (info, _) in reg.catalogs().filter(|(i, _)| !i.adult || adult_sources) {
                     ui.selectable_value(&mut st.source, Some(info.id.clone()), &info.name);
                 }
             });
@@ -477,6 +471,15 @@ pub struct DetailsAction {
     pub reload_chapters: bool,
     pub resume: Option<ResumePoint>,
     pub toggle_favorite: bool,
+    /// Download these chapter indices for offline reading.
+    pub download: Vec<usize>,
+}
+
+/// Offline state of the work on the details page.
+pub struct DlInfo<'a> {
+    pub saved: Option<&'a Entry>,
+    /// chapter id -> queued / running / failed
+    pub status: HashMap<String, DlStatus>,
 }
 
 pub fn details(
@@ -486,6 +489,7 @@ pub fn details(
     covers: &mut Covers,
     favorite: bool,
     progress: Option<&Progress>,
+    dl: &DlInfo,
 ) -> DetailsAction {
     let mut action = DetailsAction {
         back: ui.button(theme::label(icons::CARET_LEFT, "Back")).clicked(),
@@ -677,12 +681,12 @@ pub fn details(
     }
     if source.is_some_and(|s| s.can_read()) {
         ui.add_space(16.0);
-        chapter_list(ui, st, &mut action);
+        chapter_list(ui, st, &mut action, dl);
     }
     action
 }
 
-fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAction) {
+fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAction, dl: &DlInfo) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Chapters").strong().size(18.0));
         let label = LANGUAGES
@@ -703,6 +707,25 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                     }
                 }
             });
+        if let Some(Ok(list)) = &st.chapters {
+            let missing: Vec<usize> = (0..list.len())
+                .filter(|i| !dl.saved.is_some_and(|e| e.has(&list[*i].id)))
+                .filter(|i| !dl.status.contains_key(&list[*i].id))
+                .collect();
+            let all = format!("Download all ({})", missing.len());
+            if !missing.is_empty()
+                && ui
+                    .button(theme::label(icons::DOWNLOAD_SIMPLE, &all))
+                    .on_hover_text("Save every chapter for offline reading")
+                    .clicked()
+            {
+                action.download = missing;
+            }
+            let saved = dl.saved.map_or(0, |e| e.chapters.len());
+            if saved > 0 {
+                ui.label(RichText::new(format!("{} {saved} offline", icons::CHECK)).color(theme::ACCENT));
+            }
+        }
     });
     ui.add_space(6.0);
     match &st.chapters {
@@ -721,12 +744,47 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
                 let lang = c.language.as_deref().unwrap_or("?");
                 let pages = c.page_count.map_or(String::new(), |p| format!(" · {p} p"));
                 let text = format!("{}   ·   {lang}{pages}   ·   {groups}", c.label());
-                let row = egui::Button::new(text)
-                    .frame(false)
-                    .min_size(vec2(ui.available_width(), 28.0));
-                if ui.add(row).clicked() {
-                    action.read = Some(i);
-                }
+                ui.horizontal(|ui| {
+                    const STATUS: f32 = 110.0;
+                    let row = egui::Button::new(text)
+                        .frame(false)
+                        .min_size(vec2((ui.available_width() - STATUS).max(80.0), 28.0));
+                    if ui.add(row).clicked() {
+                        action.read = Some(i);
+                    }
+                    if dl.saved.is_some_and(|e| e.has(&c.id)) {
+                        ui.label(RichText::new(format!("{} Offline", icons::CHECK)).color(theme::ACCENT))
+                            .on_hover_text("Saved; reads without a connection");
+                        return;
+                    }
+                    match dl.status.get(&c.id) {
+                        Some(DlStatus::Queued) => {
+                            ui.label(RichText::new("Queued").color(theme::MUTED));
+                        }
+                        Some(DlStatus::Running { done, total }) => {
+                            let frac = if *total == 0 { 0.0 } else { *done as f32 / *total as f32 };
+                            ui.add(
+                                egui::ProgressBar::new(frac)
+                                    .desired_width(90.0)
+                                    .text(format!("{done}/{total}")),
+                            );
+                        }
+                        Some(DlStatus::Failed(e)) => {
+                            if ui.button("Retry").on_hover_text(format!("Download failed: {e}")).clicked() {
+                                action.download = vec![i];
+                            }
+                        }
+                        None => {
+                            if ui
+                                .small_button(icons::DOWNLOAD_SIMPLE)
+                                .on_hover_text("Download for offline reading")
+                                .clicked()
+                            {
+                                action.download = vec![i];
+                            }
+                        }
+                    }
+                });
             }
         }
     }
