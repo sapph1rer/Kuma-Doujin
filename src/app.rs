@@ -1933,6 +1933,12 @@ impl eframe::App for KumaApp {
             self.search_history.clear();
             self.save_setting(SEARCH_HISTORY_KEY, "[]".into());
         }
+        if let Some(h) = actions.remove_search_history {
+            self.search_history.retain(|x| *x != h);
+            if let Ok(json) = serde_json::to_string(&self.search_history) {
+                self.save_setting(SEARCH_HISTORY_KEY, json);
+            }
+        }
         if let Some(src) = actions.load_tags {
             self.load_tags(src);
         }

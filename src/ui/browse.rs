@@ -76,6 +76,7 @@ pub struct Actions {
     pub open: Option<MangaKey>,
     pub load_tags: Option<String>,
     pub clear_search_history: bool,
+    pub remove_search_history: Option<String>,
     /// A card's right-click menu choice.
     pub card: Option<CardAct>,
     /// User toggled the 18+ filter (the app confirms age before enabling).
@@ -466,12 +467,35 @@ pub fn browse(
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} Recent:", icons::CLOCK_COUNTER_CLOCKWISE)).color(theme::MUTED));
             for h in history {
-                if ui.add(egui::Button::new(RichText::new(h).small()).corner_radius(12)).clicked() {
+                let chip = ui.add(egui::Button::new(RichText::new(h).small()).corner_radius(12));
+                let mut search = chip.clicked();
+                chip.context_menu(|ui| {
+                    if ui.button(theme::label(icons::MAGNIFYING_GLASS, "Search this")).clicked() {
+                        search = true;
+                        ui.close();
+                    }
+                    if ui.button(theme::label(icons::COPY, "Copy")).clicked() {
+                        ui.ctx().copy_text(h.clone());
+                        ui.close();
+                    }
+                    if ui.button(theme::label(icons::TRASH, "Remove from history")).clicked() {
+                        actions.remove_search_history = Some(h.clone());
+                        ui.close();
+                    }
+                });
+                if search {
                     st.query.text = h.clone();
                     reload = true;
                 }
+                if ui
+                    .add(egui::Button::new(RichText::new("×").small().color(theme::MUTED)).frame(false))
+                    .on_hover_text("Remove from history")
+                    .clicked()
+                {
+                    actions.remove_search_history = Some(h.clone());
+                }
             }
-            if ui.small_button("Clear").clicked() {
+            if ui.small_button("Clear all").clicked() {
                 actions.clear_search_history = true;
             }
         });
