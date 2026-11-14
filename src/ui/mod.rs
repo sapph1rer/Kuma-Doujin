@@ -59,3 +59,12 @@ impl View {
         }
     }
 }
+
+/// Spinner centred in the space left in the current panel.
+pub fn center_spinner(ui: &mut eframe::egui::Ui) {
+    let r = ui.available_rect_before_wrap();
+    ui.put(
+        eframe::egui::Rect::from_center_size(r.center(), eframe::egui::vec2(32.0, 32.0)),
+        eframe::egui::Spinner::new(),
+    );
+}

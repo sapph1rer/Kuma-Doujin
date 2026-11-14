@@ -331,7 +331,7 @@ impl KumaApp {
         query.include_adult = show_adult;
         query.category = category;
         let key = format!(
-            "search:{}:{}",
+            "search2:{}:{}",
             st.source.as_deref().unwrap_or("*"),
             serde_json::to_string(&query).unwrap_or_default()
         );
@@ -386,7 +386,7 @@ impl KumaApp {
             .filter(|(info, _)| info.id != key.source)
             .map(|(info, c)| (info.id.clone(), c.clone()))
             .collect();
-        let cache_key = format!("manga:{}:{}", key.source, key.id);
+        let cache_key = format!("manga2:{}:{}", key.source, key.id);
         self.worker.spawn(async move {
             if let Some(m) = cache_read::<Manga>(&db, &cache_key, DETAILS_TTL) {
                 return Msg::Details {

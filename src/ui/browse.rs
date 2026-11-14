@@ -494,7 +494,7 @@ pub fn details(
     ui.add_space(12.0);
     let m = match &st.result {
         None => {
-            ui.spinner();
+            super::center_spinner(ui);
             return action;
         }
         Some(Err(e)) => {
@@ -707,7 +707,7 @@ fn chapter_list(ui: &mut egui::Ui, st: &mut DetailsState, action: &mut DetailsAc
     ui.add_space(6.0);
     match &st.chapters {
         None => {
-            ui.spinner();
+            super::center_spinner(ui);
         }
         Some(Err(e)) => empty_state(ui, "Could not load chapters", e),
         Some(Ok(list)) if list.is_empty() => empty_state(
