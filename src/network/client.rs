@@ -75,6 +75,13 @@ impl HttpClient {
         serde_json::from_slice(&body).map_err(|e| SourceError::InvalidResponse(e.to_string()))
     }
 
+    /// Fetches an HTML/text page, rejecting non-`text/*` responses and bodies over `max_bytes`.
+    pub async fn get_text(&self, url: &str, max_bytes: usize) -> SourceResult<String> {
+        let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
+        let (body, _) = self.get(&url, max_bytes, Some("text/"), None).await?;
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+
     /// Fetches an image, rejecting non-`image/*` responses and bodies over `max_bytes`.
     pub async fn get_image(&self, url: &str, max_bytes: usize) -> SourceResult<Vec<u8>> {
         Ok(self.get_image_with_headers(url, max_bytes).await?.0)

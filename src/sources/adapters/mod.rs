@@ -5,5 +5,6 @@ pub mod doujin_lc;
 pub mod hentaithai;
 pub mod dark_manga;
 pub mod go_manga;
+pub mod mangastream;
 pub mod kairew;
 pub mod up_manga;
