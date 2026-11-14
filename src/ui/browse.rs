@@ -1,4 +1,4 @@
-//! Cover grids (Discover / Popular / Latest / Search / Home rows) and the details page.
+﻿//! Cover grids (Discover / Popular / Latest / Search / Home rows) and the details page.
 //! Views only mutate UI state and return what they want done; `app.rs` runs the work.
 
 use std::collections::HashMap;
@@ -469,16 +469,14 @@ pub fn browse(
             for h in history {
                 let (chip, remove) = egui::Frame::new()
                     .fill(theme::SURFACE)
-                    .corner_radius(12)
-                    .inner_margin(egui::Margin { left: 10, right: 4, top: 2, bottom: 2 })
+                    .corner_radius(14)
+                    .inner_margin(egui::Margin { left: 12, right: 5, top: 4, bottom: 4 })
                     .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.spacing_mut().item_spacing.x = 6.0;
                         let word = ui
-                            .add(Label::new(RichText::new(h).small()).sense(Sense::click()))
+                            .add(Label::new(RichText::new(h).size(13.5)).sense(Sense::click()))
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        let x = ui
-                            .add(egui::Button::new(RichText::new("×").small().color(theme::MUTED)).frame(false))
-                            .on_hover_text("Remove from history");
+                        let x = close_button(ui).on_hover_text("Remove from history");
                         (word, x)
                     })
                     .inner;
@@ -505,7 +503,7 @@ pub fn browse(
                     reload = true;
                 }
             }
-            if ui.small_button("Clear all").clicked() {
+            if ui.button(theme::label(icons::TRASH, "Clear all")).clicked() {
                 actions.clear_search_history = true;
             }
         });
@@ -1195,4 +1193,18 @@ impl BrowseState {
         self.query.include_tags = p.include_tags;
         self.query.text = p.text;
     }
+}
+
+/// Round "×" button: a clear 18 px target that lights up on hover.
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let hov = theme::anim(ui, resp.id, resp.hovered());
+    let fill = Color32::from_white_alpha(18).lerp_to_gamma(theme::ACCENT, hov);
+    ui.painter().circle_filled(rect.center(), 9.0, fill);
+    let c = rect.center();
+    let s = 3.6;
+    let stroke = Stroke::new(1.6, Color32::from_gray(170).lerp_to_gamma(Color32::WHITE, hov));
+    ui.painter().line_segment([c + vec2(-s, -s), c + vec2(s, s)], stroke);
+    ui.painter().line_segment([c + vec2(-s, s), c + vec2(s, -s)], stroke);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
