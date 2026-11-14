@@ -45,22 +45,24 @@ fn run(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     registry.register(sources::adapters::up_manga::UpManga::source(theme_http)?)?;
 
     // These sites answer plain HTTP with 403 (browser check); the helper browser next to the exe
-    // (kuma-browser.exe) loads their pages instead. Kairew is not registered: it is a paid-coin
-    // platform whose pages are not scraped here.
+    // (kuma-browser.exe) loads their pages instead. Kairew is listing-only: its reader is
+    // protected, so the details page links to the site.
     let gated_http = Arc::new(
         network::client::HttpClient::new(
-            &["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com"],
+            &["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "kairew.com"],
             &[
                 ("miku-doujin.com", Duration::from_millis(400)),
                 ("doujin-lc.net", Duration::from_millis(400)),
                 ("hentaithai.net", Duration::from_millis(400)),
+                ("kairew.com", Duration::from_millis(400)),
             ],
         )?
         .with_browser(network::browser::BrowserProcess::beside_current_exe().map(Arc::new)),
     );
     registry.register(sources::adapters::miku_doujin::MikuDoujin::source(gated_http.clone())?)?;
     registry.register(sources::adapters::doujin_lc::DoujinLc::source(gated_http.clone())?)?;
-    registry.register(sources::adapters::hentaithai::HentaiThai::source(gated_http)?)?;
+    registry.register(sources::adapters::hentaithai::HentaiThai::source(gated_http.clone())?)?;
+    registry.register(sources::adapters::kairew::Kairew::source(gated_http)?)?;
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

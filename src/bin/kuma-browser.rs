@@ -53,6 +53,10 @@ mod win {
         shown: bool,
         tried_inpage: bool,
         html_pending: bool,
+        /// CSS selector that must match before the page counts as loaded (client-rendered pages)
+        wait: Option<String>,
+        /// when the wait selector first matched; the page then gets a moment to finish rendering
+        wait_met_at: Option<Instant>,
         /// page open when the job began; seeing it again means the navigation has not replaced it yet
         start_href: String,
     }
@@ -72,11 +76,17 @@ mod win {
         u.split('#').next().unwrap_or(u).trim_end_matches('/').to_string()
     }
 
-    /// Replies [readyState, title, href, challenged].
+    /// Replies [readyState, title, href, challenged, waitedForSelectorPresent].
+    fn poll_js(wait: Option<&str>) -> String {
+        let sel = serde_json::to_string(wait.unwrap_or("")).unwrap_or_else(|_| "\"\"".into());
+        POLL_JS.replace("__SEL__", &sel)
+    }
+
     const POLL_JS: &str = r#"(function(){var t=document.title||'';var b=document.body?document.body.innerText.slice(0,400):'';
 var ch=/just a moment|attention required|checking your browser|verify you are human|security check|sorry, you have been blocked/i.test(t+' '+b)
  || !!document.querySelector('#challenge-form,#cf-challenge-running,.cf-turnstile,#turnstile-wrapper,[name=cf-turnstile-response]');
-return JSON.stringify([document.readyState,t,location.href,ch]);})()"#;
+var sel=__SEL__;var w=!sel||!!document.querySelector(sel);
+return JSON.stringify([document.readyState,t,location.href,ch,w]);})()"#;
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let event_loop = EventLoopBuilder::<Ev>::with_user_event().build();
@@ -203,6 +213,13 @@ return JSON.stringify([document.readyState,t,location.href,ch]);})()"#;
                         let ready = v.get(0).and_then(|x| x.as_str()) == Some("complete");
                         let href = v.get(2).and_then(|x| x.as_str()).unwrap_or("").to_string();
                         let ch = v.get(3).and_then(|x| x.as_bool()).unwrap_or(false);
+                        let matched = v.get(4).and_then(|x| x.as_bool()).unwrap_or(true);
+                        if matched && j.wait.is_some() {
+                            j.wait_met_at.get_or_insert_with(Instant::now);
+                        }
+                        let waited = matched
+                            && (j.wait.is_none()
+                                || j.wait_met_at.is_some_and(|t| t.elapsed() > Duration::from_millis(2500)));
                         if !href.is_empty() && href != "about:blank" {
                             current_origin = origin(&href);
                             current_href = href.clone();
@@ -221,7 +238,7 @@ return JSON.stringify([document.readyState,t,location.href,ch]);})()"#;
                                 window.set_visible(true);
                                 window.set_focus();
                             }
-                        } else if ready && href != "about:blank" && !j.html_pending {
+                        } else if ready && waited && href != "about:blank" && !j.html_pending {
                             j.html_pending = true;
                             let p = proxy.clone();
                             let tk = j.token;
@@ -272,10 +289,12 @@ return JSON.stringify([document.readyState,t,location.href,ch]);})()"#;
                     shown: false,
                     tried_inpage: false,
                     html_pending: false,
+                    wait_met_at: None,
+                    wait: v.get("wait").and_then(|x| x.as_str()).map(str::to_string),
                     start_href: current_href.clone(),
                 };
                 // same site already open and past its check: fetch from inside the page (fast, keeps cookies)
-                let same = origin(&url) == current_origin && challenged_origin.as_deref() != Some(current_origin.as_str());
+                let same = j.wait.is_none() && origin(&url) == current_origin && challenged_origin.as_deref() != Some(current_origin.as_str());
                 if same {
                     j.tried_inpage = true;
                     let js = format!(
@@ -299,7 +318,7 @@ return JSON.stringify([document.readyState,t,location.href,ch]);})()"#;
                 } else if !j.html_pending && !(j.tried_inpage && now.duration_since(j.started) < Duration::from_secs(4)) {
                     let p = proxy.clone();
                     let tk = j.token;
-                    let _ = webview.evaluate_script_with_callback(POLL_JS, move |s| {
+                    let _ = webview.evaluate_script_with_callback(&poll_js(j.wait.as_deref()), move |s| {
                         let _ = p.send_event(Ev::Poll(tk, s));
                     });
                 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use kumadoujin::core::models::{SearchQuery, SortOrder};
 use kumadoujin::network::browser::BrowserProcess;
 use kumadoujin::network::client::HttpClient;
-use kumadoujin::sources::adapters::{doujin_lc::DoujinLc, hentaithai::HentaiThai, miku_doujin::MikuDoujin};
+use kumadoujin::sources::adapters::{doujin_lc::DoujinLc, hentaithai::HentaiThai, kairew::Kairew, miku_doujin::MikuDoujin};
 use kumadoujin::sources::registry::Source;
 
 async fn walk(s: Source, search_word: &str) {
@@ -41,11 +41,22 @@ async fn walk(s: Source, search_word: &str) {
 async fn live() {
     let browser = Arc::new(BrowserProcess::beside_current_exe().expect("KUMA_BROWSER_EXE"));
     let http = Arc::new(
-        HttpClient::new(&["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com"], &[])
+        HttpClient::new(&["miku-doujin.com", "doujin-lc.net", "hentaithai.net", "mangaclaw.com", "kairew.com"], &[])
             .unwrap()
             .with_browser(Some(browser)),
     );
     walk(HentaiThai::source(http.clone()).unwrap(), "sekitsui").await;
     walk(DoujinLc::source(http.clone()).unwrap(), "wife").await;
-    walk(MikuDoujin::source(http).unwrap(), "mother").await;
+    walk(MikuDoujin::source(http.clone()).unwrap(), "mother").await;
+
+    let k = Kairew::source(http).unwrap().catalog.unwrap();
+    let list = k.search(&SearchQuery { page: 1, ..Default::default() }).await.unwrap();
+    println!("[Kairew] {} items", list.items.len());
+    assert!(list.items.len() > 10);
+    let f = &list.items[0];
+    println!("  first: {} cover bytes: {}", f.titles.display(), k.cover(f.cover_url.as_ref().unwrap()).await.unwrap().len());
+    let m = k.details(&f.key.id).await.unwrap();
+    println!("  details: {} desc_len={} cover={:?} url={:?}", m.titles.display(), m.description.as_deref().map_or(0, str::len), m.cover_url, m.source_url);
+    let word = f.titles.display().chars().take(3).collect::<String>();
+    println!("  filter '{word}': {}", k.search(&SearchQuery { page: 1, text: word.clone(), ..Default::default() }).await.unwrap().items.len());
 }

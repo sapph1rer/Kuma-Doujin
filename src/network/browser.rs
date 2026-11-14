@@ -115,8 +115,8 @@ impl BrowserProcess {
     }
 
     /// Page HTML after scripts and any browser check have run. Blocking.
-    pub fn fetch(&self, url: &str) -> Result<String> {
-        let v = self.call(json!({"op": "fetch", "url": url}), Duration::from_secs(95))?;
+    pub fn fetch(&self, url: &str, wait: Option<&str>) -> Result<String> {
+        let v = self.call(json!({"op": "fetch", "url": url, "wait": wait}), Duration::from_secs(95))?;
         let status = v.get("status").and_then(Value::as_u64).unwrap_or(200);
         if status >= 400 {
             bail!("GET {url} (browser) -> HTTP {status}");

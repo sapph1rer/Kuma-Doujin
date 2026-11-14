@@ -28,6 +28,8 @@ pub struct HttpClient {
     permits: Semaphore,
     retry: RetryPolicy,
     browser: Option<Arc<BrowserProcess>>,
+    /// hosts that already needed the helper browser; later requests skip the doomed direct attempt
+    browser_hosts: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// SSRF guard: only `https` URLs whose host equals an allowed host or is a subdomain of it.
@@ -64,6 +66,7 @@ impl HttpClient {
             permits: Semaphore::new(MAX_CONCURRENT),
             retry: RetryPolicy::default(),
             browser: None,
+            browser_hosts: Default::default(),
         })
     }
 
@@ -88,17 +91,42 @@ impl HttpClient {
     /// Fetches an HTML/text page, rejecting non-`text/*` responses and bodies over `max_bytes`.
     /// On 403 the helper browser (if any) loads it instead.
     pub async fn get_text(&self, url: &str, max_bytes: usize) -> SourceResult<String> {
+        self.get_text_waiting(url, max_bytes, None).await
+    }
+
+    /// Like [`Self::get_text`]; the helper browser also waits until `wait` (a CSS selector) matches,
+    /// for pages that render their content with JavaScript after loading.
+    pub async fn get_text_waiting(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        wait: Option<&str>,
+    ) -> SourceResult<String> {
+        let wait = wait.map(str::to_string);
         let url = Url::parse(url).map_err(|e| SourceError::InvalidResponse(e.to_string()))?;
-        match self.get(&url, max_bytes, Some("text/"), None, None).await {
+        // a page that renders client-side needs the browser even when plain HTTP is allowed
+        let host = url.host_str().unwrap_or_default().to_string();
+        let known = self.browser_hosts.lock().is_ok_and(|h| h.contains(&host));
+        let plain = if (wait.is_some() || known) && self.browser.is_some() {
+            Err(SourceError::AccessDenied)
+        } else {
+            self.get(&url, max_bytes, Some("text/"), None, None).await
+        };
+        match plain {
             Ok((body, _)) if !(self.browser.is_some() && is_challenge(&body)) => {
                 Ok(String::from_utf8_lossy(&body).into_owned())
             }
             // some hosts answer non-browser clients with a fake 404 instead of 403
-            Ok(_) | Err(SourceError::AccessDenied | SourceError::NotFound) if self.browser.is_some() => {
+            Ok(_) | Err(SourceError::AccessDenied | SourceError::NotFound | SourceError::Network(_))
+                if self.browser.is_some() =>
+            {
                 self.check(&url)?;
+                if let Ok(mut h) = self.browser_hosts.lock() {
+                    h.insert(host);
+                }
                 let browser = self.browser.clone().expect("checked");
                 let u = url.to_string();
-                let html = tokio::task::spawn_blocking(move || browser.fetch(&u))
+                let html = tokio::task::spawn_blocking(move || browser.fetch(&u, wait.as_deref()))
                     .await
                     .map_err(|e| SourceError::Network(e.to_string()))?
                     .map_err(|e| SourceError::Network(format!("{e:#}")))?;
