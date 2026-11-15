@@ -95,7 +95,16 @@ fn client() -> reqwest::Client {
         .expect("http client")
 }
 
+/// Newest release: the GitHub API first (has the notes); if it refuses (60 requests/hour per IP,
+/// easily used up on shared VPN/WARP addresses), the github.com release pages instead.
 pub async fn latest_release() -> Result<Release> {
+    match latest_from_api().await {
+        Ok(r) => Ok(r),
+        Err(api) => latest_from_web().await.with_context(|| format!("{api:#}")),
+    }
+}
+
+async fn latest_from_api() -> Result<Release> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let v: serde_json::Value = client()
         .get(url)
@@ -112,6 +121,44 @@ pub async fn latest_release() -> Result<Release> {
         bail!("GitHub: {m}");
     }
     parse_release(&v)
+}
+
+/// `/releases/latest` redirects to `/releases/tag/<tag>`; the asset list comes from `expanded_assets`.
+async fn latest_from_web() -> Result<Release> {
+    let c = client();
+    let resp = c.get(format!("https://github.com/{REPO}/releases/latest")).send().await?.error_for_status()?;
+    let page = resp.url().to_string();
+    let tag = page
+        .rsplit_once("/releases/tag/")
+        .map(|(_, t)| t.trim_end_matches('/').to_string())
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| anyhow!("no releases yet"))?;
+    let html = c
+        .get(format!("https://github.com/{REPO}/releases/expanded_assets/{tag}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    parse_release(&web_release_json(&tag, &page, &html))
+}
+
+/// The API's release shape, built from the release page's asset links (sizes and notes unknown).
+fn web_release_json(tag: &str, page: &str, assets_html: &str) -> serde_json::Value {
+    let prefix = format!("/{REPO}/releases/download/{tag}/");
+    let mut assets: Vec<serde_json::Value> = vec![];
+    for part in assets_html.split("href=\"").skip(1) {
+        let href = part.split('"').next().unwrap_or("");
+        if let Some(name) = href.strip_prefix(&prefix)
+            && !assets.iter().any(|a| a["name"] == name)
+        {
+            assets.push(serde_json::json!({
+                "name": name,
+                "browser_download_url": format!("https://github.com{href}"),
+            }));
+        }
+    }
+    serde_json::json!({ "tag_name": tag, "html_url": page, "body": "", "assets": assets })
 }
 
 fn sha256_hex(path: &Path) -> Result<String> {
@@ -318,5 +365,27 @@ mod tests {
         assert_eq!(remove_old(&base.join("app")), 0); // not in use any more: cleaned up
         assert!(base.join("app/kumadoujin.exe").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn release_from_web_page() {
+        let html = format!(
+            r#"<a href="/{REPO}/releases/download/v9.1.0/KumaDoujin-v9.1.0-windows-x64.zip">x</a>
+               <a href="/{REPO}/releases/download/v9.1.0/KumaDoujin-v9.1.0-windows-x64.zip.sha256">y</a>
+               <a href="/{REPO}/archive/refs/tags/v9.1.0.zip">src</a>"#
+        );
+        let r = parse_release(&web_release_json("v9.1.0", "https://github.com/x/releases/tag/v9.1.0", &html)).unwrap();
+        assert_eq!(r.version, (9, 1, 0));
+        assert_eq!(r.asset_name, "KumaDoujin-v9.1.0-windows-x64.zip");
+        assert!(r.asset_url.unwrap().starts_with("https://github.com/"));
+        assert!(r.sha_url.unwrap().ends_with(".zip.sha256"));
+    }
+
+    /// Hits github.com: `cargo test --lib web_fallback_live -- --ignored`
+    #[tokio::test]
+    #[ignore]
+    async fn web_fallback_live() {
+        let r = latest_from_web().await.unwrap();
+        assert!(r.asset_url.is_some() && r.sha_url.is_some(), "{r:?}");
     }
 }
