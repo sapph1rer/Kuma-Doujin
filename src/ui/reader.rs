@@ -17,7 +17,8 @@ const PLACEHOLDER_RATIO: f32 = 1.42;
 
 pub enum PageSlot {
     Loading(AbortHandle),
-    Ready(TextureHandle),
+    /// A page as stacked tiles (one for normal pages; several for long webtoon strips).
+    Ready(Vec<TextureHandle>),
     Failed(String),
 }
 
@@ -49,6 +50,8 @@ pub struct ReaderState {
     pub auto_scroll: bool,
     /// After a double-click zoom: the point to bring to the centre (fraction of the content).
     zoom_focus: Option<Vec2>,
+    /// Ctrl+wheel / pinch zoom this frame: (zoom before, pointer position) to keep that spot still.
+    pinch_anchor: Option<(f32, Option<egui::Pos2>)>,
 }
 
 #[derive(Default)]
@@ -96,6 +99,7 @@ impl ReaderState {
             offset_x: 0.0,
             auto_scroll: false,
             zoom_focus: None,
+            pinch_anchor: None,
         }
     }
 
@@ -120,18 +124,25 @@ impl ReaderState {
         &mut self,
         ctx: &egui::Context,
         index: usize,
-        result: Result<egui::ColorImage, String>,
+        result: Result<Vec<egui::ColorImage>, String>,
     ) {
         // Ignore results for pages released while loading.
         if !matches!(self.slots.get(&index), Some(PageSlot::Loading(_))) {
             return;
         }
         let slot = match result {
-            Ok(img) => {
-                self.sizes
-                    .insert(index, vec2(img.size[0] as f32, img.size[1] as f32));
-                let name = format!("page-{}-{index}", self.generation);
-                PageSlot::Ready(ctx.load_texture(name, img, egui::TextureOptions::LINEAR))
+            Ok(tiles) => {
+                let w = tiles.first().map_or(1, |t| t.size[0]) as f32;
+                let h: usize = tiles.iter().map(|t| t.size[1]).sum();
+                self.sizes.insert(index, vec2(w, h.max(1) as f32));
+                let gen_ = self.generation;
+                PageSlot::Ready(
+                    tiles
+                        .into_iter()
+                        .enumerate()
+                        .map(|(n, img)| ctx.load_texture(format!("page-{gen_}-{index}-{n}"), img, egui::TextureOptions::LINEAR))
+                        .collect(),
+                )
             }
             Err(e) => PageSlot::Failed(e),
         };
@@ -277,8 +288,8 @@ fn keyboard(ctx: &egui::Context, st: &mut ReaderState, s: &mut ReaderSettings) -
     if pinch != 1.0 {
         let old = st.zoom;
         st.zoom = (st.zoom * pinch).clamp(0.2, 5.0);
-        if !paged && old > 0.0 {
-            st.offset *= st.zoom / old; // keep the same spot in view
+        if !paged && old > 0.0 && st.pinch_anchor.is_none() {
+            st.pinch_anchor = Some((old, ctx.input(|i| i.pointer.hover_pos())));
         }
     }
     if pressed(Key::T) {
@@ -350,9 +361,7 @@ fn paged(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings) -> Rea
                 let page_rect = Rect::from_min_size(pos2(x, rect.center().y - size.y / 2.0), *size);
                 x += size.x;
                 match st.slots.get(i) {
-                    Some(PageSlot::Ready(t)) => {
-                        egui::Image::new((t.id(), t.size_vec2())).tint(tint).paint_at(ui, page_rect);
-                    }
+                    Some(PageSlot::Ready(t)) => paint_tiles(ui, t, page_rect, tint),
                     Some(PageSlot::Failed(e)) => {
                         if failed_page(ui, page_rect, e) {
                             action.retry_page = Some(*i);
@@ -458,7 +467,19 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings) -> 
         ui.ctx().request_repaint();
     }
     let content_w = width.max(avail.x);
-    if let Some(i) = st.scroll_to.take()
+    let anchor = st.pinch_anchor.take();
+    if let Some((old, pointer)) = anchor.filter(|(old, _)| *old > 0.0 && (st.zoom - old).abs() > f32::EPSILON) {
+        // keep the spot under the pointer (or the view centre) where it is while zooming
+        let origin = ui.cursor().min;
+        let p = pointer.map_or(avail / 2.0, |p| (p - origin).clamp(Vec2::ZERO, avail));
+        let ratio = st.zoom / old;
+        let old_w = (width / ratio).max(avail.x);
+        let fx = (st.offset_x + p.x) / old_w.max(1.0);
+        let y = (st.offset + p.y) * ratio - p.y;
+        let x = fx * content_w - p.x;
+        st.offset = y.max(0.0);
+        area = area.scroll_offset(vec2(x.max(0.0), y.max(0.0)));
+    } else if let Some(i) = st.scroll_to.take()
         && i < tops.len()
     {
         area = area.vertical_scroll_offset(tops[i]);
@@ -500,9 +521,7 @@ fn vertical(ui: &mut egui::Ui, st: &mut ReaderState, s: &mut ReaderSettings) -> 
             }
             let r = Rect::from_min_size(pos2(left, origin.y + top), vec2(width, h));
             match st.slots.get(&i) {
-                Some(PageSlot::Ready(t)) => {
-                    egui::Image::new((t.id(), t.size_vec2())).tint(tint).paint_at(ui, r)
-                }
+                Some(PageSlot::Ready(t)) => paint_tiles(ui, t, r, tint),
                 Some(PageSlot::Failed(e)) => {
                     if failed_page(ui, r, e) {
                         action.retry_page = Some(i);
@@ -531,6 +550,20 @@ fn page_tint(s: &ReaderSettings) -> Color32 {
     let w = s.night_warmth.clamp(0.0, 1.0);
     let c = |v: f32| (v * b).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(c(255.0), c(255.0 - 45.0 * w), c(255.0 - 140.0 * w))
+}
+
+/// Paints a page's tiles stacked top to bottom, filling `r`.
+fn paint_tiles(ui: &egui::Ui, tiles: &[TextureHandle], r: Rect, tint: Color32) {
+    let total: f32 = tiles.iter().map(|t| t.size_vec2().y).sum::<f32>().max(1.0);
+    let mut y = r.top();
+    for t in tiles {
+        let h = r.height() * t.size_vec2().y / total;
+        let tile = Rect::from_min_size(pos2(r.left(), y), vec2(r.width(), h));
+        if ui.is_rect_visible(tile) {
+            egui::Image::new((t.id(), t.size_vec2())).tint(tint).paint_at(ui, tile);
+        }
+        y += h;
+    }
 }
 
 /// Draws an error box with a Retry button; returns true if Retry was clicked.

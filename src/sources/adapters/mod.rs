@@ -8,3 +8,4 @@ pub mod go_manga;
 pub mod mangastream;
 pub mod kairew;
 pub mod up_manga;
+pub mod nhentai_xxx;

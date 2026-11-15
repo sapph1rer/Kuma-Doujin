@@ -65,6 +65,13 @@ fn run(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     registry.register(sources::adapters::hentaithai::HentaiThai::source(gated_http.clone())?)?;
     registry.register(sources::adapters::kairew::Kairew::source(gated_http)?)?;
 
+    // nhentai.xxx answers plain HTTP; images come from i*.nhentaimg.com.
+    let nh_http = Arc::new(network::client::HttpClient::new(
+        &["nhentai.xxx", "nhentaimg.com"],
+        &[("nhentai.xxx", Duration::from_millis(300))],
+    )?);
+    registry.register(sources::adapters::nhentai_xxx::NhentaiXxx::source(nh_http)?)?;
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("KumaDoujin")

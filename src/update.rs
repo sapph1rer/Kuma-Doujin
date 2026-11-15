@@ -193,16 +193,31 @@ pub fn swap_in(src: &Path, files: &[PathBuf], target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Files left by an earlier update (`*.old-N`) are no longer in use: removed at start.
+/// Files left by an earlier update (`*.old-N`) are removed at start. Right after an update the
+/// previous process may still be closing (its exe stays locked), so this retries in the background.
 pub fn clean_old() {
     let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else {
         return;
     };
-    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        if e.file_name().to_string_lossy().contains(".old-") {
-            let _ = std::fs::remove_file(e.path());
+    let _ = std::thread::Builder::new().name("clean-old".into()).spawn(move || {
+        for _ in 0..120 {
+            if remove_old(&dir) == 0 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
-    }
+    });
+}
+
+/// Deletes `*.old-N` files in `dir`; returns how many are still there (in use).
+fn remove_old(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".old-"))
+        .filter(|e| std::fs::remove_file(e.path()).is_err())
+        .count()
 }
 
 /// Download, verify and put the release in place. Returns the new program to start.
@@ -300,6 +315,8 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".old-"))
             .collect();
         assert_eq!(old.len(), 1);
+        assert_eq!(remove_old(&base.join("app")), 0); // not in use any more: cleaned up
+        assert!(base.join("app/kumadoujin.exe").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

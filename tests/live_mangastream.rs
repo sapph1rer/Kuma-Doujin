@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use kumadoujin::core::models::{SearchQuery, SortOrder};
 use kumadoujin::network::client::HttpClient;
-use kumadoujin::sources::adapters::{dark_manga::DarkManga, go_manga::GoManga, up_manga::UpManga};
+use kumadoujin::sources::adapters::{dark_manga::DarkManga, go_manga::GoManga, nhentai_xxx::NhentaiXxx, up_manga::UpManga};
 use kumadoujin::sources::registry::Source;
 
 async fn walk(s: Source) {
@@ -68,4 +68,11 @@ async fn go_manga() {
 #[ignore]
 async fn up_manga() {
     walk(UpManga::source(http()).unwrap()).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn nhentai_xxx() {
+    let http = Arc::new(HttpClient::new(&["nhentai.xxx", "nhentaimg.com"], &[]).unwrap());
+    walk(NhentaiXxx::source(http).unwrap()).await;
 }

@@ -108,7 +108,7 @@ pub enum Msg {
     Page {
         generation: u64,
         index: usize,
-        result: Result<ColorImage, String>,
+        result: Result<Vec<ColorImage>, String>,
     },
     /// The offline library changed (download finished or deleted).
     Downloads(Vec<Entry>),
@@ -731,7 +731,11 @@ impl KumaApp {
             Msg::Installed(result) => {
                 self.upd.progress = None;
                 match result {
-                    Ok(exe) => self.upd.installed = Some(exe),
+                    // start the new version straight away (the button stays as a fallback)
+                    Ok(exe) => {
+                        self.restart_into(ctx, &exe);
+                        self.upd.installed = Some(exe);
+                    }
                     Err(e) => self.upd.error = Some(e),
                 }
             }
@@ -1172,7 +1176,7 @@ impl KumaApp {
                 };
                 let result = match bytes {
                     Ok(b) => tokio::task::spawn_blocking(move || {
-                        image_decoder::decode(&b, MAX_PAGE_DIM, max_side)
+                        image_decoder::decode_tiles(&b, MAX_PAGE_DIM, max_side)
                     })
                     .await
                     .unwrap_or_else(|e| Err(e.to_string())),
